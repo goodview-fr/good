@@ -2,7 +2,7 @@
 # good - Git + Goodview workflow helper
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 GOOD_CLI_GITHUB_RAW="https://raw.githubusercontent.com/goodview-fr/good/main/good"
 
 COMMAND="${1:-help}"
@@ -1634,6 +1634,26 @@ _good_install_target() {
     echo "${HOME}/.local/bin/good"
 }
 
+_good_normalize_version() {
+    local v="$1"
+    v="${v#v}"
+    v="${v#V}"
+    echo "$v"
+}
+
+_good_installed_version() {
+    local target version
+    target="$(_good_install_target)"
+    if [ -f "$target" ]; then
+        version="$(grep -E '^VERSION=' "$target" | head -1 | sed -E 's/^VERSION="([^"]+)".*/\1/')"
+        if [ -n "$version" ]; then
+            _good_normalize_version "$version"
+            return
+        fi
+    fi
+    _good_normalize_version "$VERSION"
+}
+
 _good_compare_versions() {
     python3 - "$1" "$2" <<'PY'
 import sys
@@ -1676,7 +1696,7 @@ _good_remote_script_version() {
     fi
     version="$(grep -E '^VERSION=' "$tmp" | head -1 | sed -E 's/^VERSION="([^"]+)".*/\1/')"
     rm -f "$tmp"
-    echo "${version:-$VERSION}"
+    _good_normalize_version "${version:-$VERSION}"
 }
 
 _good_fetch_version_manifest() {
@@ -1724,14 +1744,17 @@ _good_install_cli() {
     mkdir -p "$(dirname "$target")"
     install -m 755 "$tmp" "$target"
     rm -f "$tmp"
-    echo "✓ good installé dans $target"
+    local installed_version
+    installed_version="$(grep -E '^VERSION=' "$target" | head -1 | sed -E 's/^VERSION="([^"]+)".*/\1/')"
+    echo "✓ good v${installed_version:-?} installé dans $target"
 }
 
 _good_update_cli() {
     local force="${1:-0}" token="${2:-}" manifest remote_version download_url current cmp
-    current="$VERSION"
+    _GOOD_CLI_UPDATE_STATUS=""
+    current="$(_good_installed_version)"
     manifest="$(_good_fetch_version_manifest "$token")"
-    remote_version="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["data"]["version"])' "$manifest")"
+    remote_version="$(_good_normalize_version "$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["data"]["version"])' "$manifest")")"
     download_url="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["data"]["download_url"])' "$manifest")"
 
     echo "CLI good : v${current} installé"
@@ -1740,15 +1763,18 @@ _good_update_cli() {
     cmp="$(_good_compare_versions "$current" "$remote_version")"
     if [ "$cmp" = "equal" ] && [ "$force" != "1" ]; then
         echo "✓ good CLI déjà à jour."
+        _GOOD_CLI_UPDATE_STATUS="already_current"
         return 0
     fi
     if [ "$cmp" = "newer" ] && [ "$force" != "1" ]; then
         echo "Version locale plus récente que le manifest (dev ?). Utilise --force pour réinstaller."
+        _GOOD_CLI_UPDATE_STATUS="local_newer"
         return 0
     fi
 
     echo "Téléchargement de good v${remote_version}..."
     _good_install_cli "$download_url"
+    _GOOD_CLI_UPDATE_STATUS="updated"
 }
 
 _good_refresh_project_cache() {
@@ -1890,14 +1916,28 @@ cmd_update() {
     fi
 
     echo ""
-    echo "✓ Mise à jour terminée."
+    case "${_GOOD_CLI_UPDATE_STATUS:-}" in
+        local_newer)
+            echo "Rien à télécharger — publie v$(_good_installed_version) sur GitHub (goodview-fr/good) et GOOD_CLI_VERSION en prod pour les autres machines."
+            ;;
+        already_current)
+            echo "✓ Terminé (good v$(_good_installed_version) déjà à jour)."
+            ;;
+        updated)
+            echo "✓ Mise à jour terminée (good v$(_good_installed_version))."
+            ;;
+        *)
+            echo "✓ Terminé (good v$(_good_installed_version))."
+            ;;
+    esac
 }
 
 cmd_log()    { _check_git; git log --oneline --graph --decorate -20; }
 cmd_status() { _check_git; git status -s; _print_sep; git log --oneline -5; }
 cmd_help() {
+    echo "good v${VERSION} — Git + Goodview (IA locale via Ollama)"
+    echo ""
     cat <<'EOF'
-good - Git + Goodview (IA locale via Ollama)
 
   c, commit    Stage tout + génère message AI + commit
   p, push      Commit si besoin + push GitHub (crée le repo si absent)
@@ -1940,5 +1980,6 @@ case "$COMMAND" in
     l|log)      cmd_log     ;;
     st|status)  cmd_status  ;;
     help|-h|--help) cmd_help ;;
+    version|-V|--version) echo "good v${VERSION}" ;;
     *) echo "Commande inconnue: $COMMAND"; cmd_help; exit 1 ;;
 esac

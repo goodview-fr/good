@@ -1,5 +1,7 @@
 # good — Aide-mémoire
 
+**Version actuelle : 1.0.1** — `good --version` ou l'en-tête de `good help`.
+
 `good` est un outil en ligne de commande qui automatise les opérations git courantes
 en utilisant l'IA locale (qwen3:8b via Ollama) pour générer les messages de commit
 et résoudre les conflits. Disponible dans tous tes projets.
@@ -136,9 +138,40 @@ Ce que ça fait :
 good update              # CLI + contexte Goodview
 good update --deps       # + dépendances du projet
 good update --force      # réinstalle le CLI même si déjà à jour
+good --version           # affiche la version installée (ex. good v1.0.1)
 ```
 
 Sans projet lié : met à jour uniquement le CLI (repli GitHub `goodview-fr/good`).
+
+Test local sans push GitHub : site Laravel avec `GOOD_CLI_VERSION=1.0.1` et
+`GOOD_CLI_DOWNLOAD_URL=file:///chemin/vers/good/good`, dépôt lié via `good init`,
+puis simuler une version obsolète avec
+`sed -i 's/VERSION="1.0.1"/VERSION="1.0.0"/' ~/.local/bin/good` avant `good update`.
+
+#### Checklist release CLI
+
+À faire **à chaque** nouvelle version du script (`good/good`, ligne `VERSION="…"`) pour que
+`good update` fonctionne sur toutes les machines :
+
+1. **Bump `VERSION`** dans `good/good` (ex. `1.0.1` → `1.0.2`).
+2. **Commit + push** le dépôt [goodview-fr/good](https://github.com/goodview-fr/good) sur `main`.
+   Sans ce push, le repli GitHub sert encore l’ancienne version.
+3. **Vérifier le manifest GitHub** :
+   ```bash
+   curl -s https://raw.githubusercontent.com/goodview-fr/good/main/good | grep '^VERSION='
+   ```
+4. **Mettre à jour goodview.fr** : `GOOD_CLI_VERSION=<même version>` dans `.env` prod (Clever Cloud).
+   Le défaut dans `config/good-cli.php` ne suffit pas si prod a une valeur explicite.
+5. **Déployer goodview.fr** pour exposer `GET /api/v1/admin/good-cli/version` avec la nouvelle version.
+6. **Mettre à jour `GOOD.md`** (en-tête « Version actuelle ») et `.env.example` du Site si besoin.
+7. **Tester** sur une machine « propre » :
+   ```bash
+   sed -i 's/VERSION="[^"]*"/VERSION="0.0.0"/' ~/.local/bin/good
+   good update
+   ```
+
+Si ta machine locale est **plus récente** que le manifest (dev non publié), `good update` affiche
+« Rien à télécharger — publie vX sur GitHub… » au lieu de prétendre qu’une mise à jour a eu lieu.
 
 ---
 
