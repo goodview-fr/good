@@ -1,0 +1,1672 @@
+#!/usr/bin/env bash
+# good - Git + Goodview workflow helper
+set -euo pipefail
+
+COMMAND="${1:-help}"
+
+_ai() {
+    echo "$@" | ollama run qwen3:8b --nowordwrap 2>/dev/null \
+        | sed '/^Thinking\.\.\./,/^\.\.\.done thinking\./d' \
+        | sed 's/^`\+//;s/`\+$//;/^```/d' \
+        | sed '/^[[:space:]]*$/d'
+}
+
+_repo_name() {
+    basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+}
+
+_check_git() {
+    if ! git rev-parse --git-dir > /dev/null 2>&1; then
+        echo "Erreur: pas dans un dépôt git. Lance 'good init' pour initialiser."
+        exit 1
+    fi
+}
+
+_has_staged() {
+    [ -n "$(git diff --cached --name-only 2>/dev/null)" ]
+}
+
+_has_changes() {
+    [ -n "$(git status --porcelain 2>/dev/null)" ]
+}
+
+_good_root() {
+    if git rev-parse --show-toplevel > /dev/null 2>&1; then
+        git rev-parse --show-toplevel
+    else
+        pwd
+    fi
+}
+
+_good_config_dir() {
+    echo "$(_good_root)/.good"
+}
+
+_good_config_file() {
+    echo "$(_good_config_dir)/config.json"
+}
+
+_good_normalize_site_base() {
+    local base="${1%/}"
+    case "$base" in
+        https://goodview.fr|http://goodview.fr)
+            echo "https://www.goodview.fr"
+            ;;
+        *)
+            echo "$base"
+            ;;
+    esac
+}
+
+_good_format_http_error() {
+    local status="${1:-?}" body="$2"
+    python3 - "$status" "$body" <<'PY'
+import json, re, sys
+
+status, body = sys.argv[1], sys.argv[2]
+stripped = body.lstrip()
+if stripped.startswith("{"):
+    try:
+        data = json.loads(body)
+        print(data.get("message") or json.dumps(data, ensure_ascii=False))
+        raise SystemExit(0)
+    except json.JSONDecodeError:
+        pass
+
+title = re.search(r"<title[^>]*>([^<]+)</title>", body, re.I)
+if title:
+    print(f"HTTP {status} — {title.group(1).strip()}")
+    raise SystemExit(0)
+
+snippet = next(
+    (line.strip() for line in body.splitlines() if line.strip() and not line.lstrip().startswith("<")),
+    "",
+)
+if snippet:
+    print(f"HTTP {status} — {snippet[:120]}")
+else:
+    print(
+        f"HTTP {status} — réponse HTML inattendue "
+        "(vérifier GOODVIEW_URL=https://www.goodview.fr ou GOODVIEW_API)"
+    )
+PY
+}
+
+_good_site_base() {
+    if [ -n "${GOODVIEW_URL:-}" ]; then
+        _good_normalize_site_base "${GOODVIEW_URL}"
+        return
+    fi
+    if [ -f "$(_good_config_file)" ]; then
+        local from_config
+        from_config="$(python3 - "$(_good_config_file)" <<'PY' 2>/dev/null || true
+import json, sys
+with open(sys.argv[1]) as f:
+    print(json.load(f).get("site_base", ""))
+PY
+)"
+        if [ -n "$from_config" ]; then
+            _good_normalize_site_base "$from_config"
+            return
+        fi
+    fi
+    echo "https://www.goodview.fr"
+}
+
+_good_api_base() {
+    if [ -n "${GOODVIEW_API:-}" ]; then
+        echo "${GOODVIEW_API%/}"
+        return
+    fi
+    if [ -f "$(_good_config_file)" ]; then
+        local from_config
+        from_config="$(python3 - "$(_good_config_file)" <<'PY' 2>/dev/null || true
+import json, sys
+with open(sys.argv[1]) as f:
+    print(json.load(f).get("api_base", ""))
+PY
+)"
+        if [ -n "$from_config" ]; then
+            echo "$from_config"
+            return
+        fi
+    fi
+    echo "$(_good_site_base)/api"
+}
+
+_good_require_python() {
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "Erreur: python3 est requis pour good init / good info."
+        exit 1
+    fi
+}
+
+_good_require_curl() {
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "Erreur: curl est requis pour good init / good info."
+        exit 1
+    fi
+}
+
+_good_open_url() {
+    local url="$1"
+    if command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "$url" >/dev/null 2>&1 &
+    elif command -v open >/dev/null 2>&1; then
+        open "$url" >/dev/null 2>&1 &
+    else
+        echo "Ouvre cette URL dans ton navigateur :" >&2
+        echo "$url" >&2
+    fi
+}
+
+_good_ensure_gitignore() {
+    local gitignore="$(_good_root)/.gitignore"
+    if [ ! -f "$gitignore" ]; then
+        printf '%s\n' '.good/' > "$gitignore"
+        return
+    fi
+    if ! grep -qxF '.good/' "$gitignore" 2>/dev/null && ! grep -qxF '.good' "$gitignore" 2>/dev/null; then
+        printf '\n# good CLI — token et liaison Goodview\n.good/\n' >> "$gitignore"
+    fi
+}
+
+_good_save_config() {
+    local token="$1" project_id="$2" site_base="$3" api_base="$4"
+    local config_dir config_file
+    config_dir="$(_good_config_dir)"
+    config_file="$(_good_config_file)"
+    mkdir -p "$config_dir"
+    python3 - "$config_file" "$token" "$project_id" "$site_base" "$api_base" "$(_good_root)" <<'PY'
+import json, sys, datetime, os
+path, token, project_id, site_base, api_base, local_path = sys.argv[1:7]
+data = {
+    "version": 1,
+    "site_base": site_base,
+    "api_base": api_base,
+    "token": token,
+    "project_id": int(project_id),
+    "local_path": local_path,
+    "linked_at": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat(),
+}
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+os.chmod(path, 0o600)
+PY
+    _good_ensure_gitignore
+}
+
+_good_load_config_value() {
+    local key="$1"
+    python3 - "$(_good_config_file)" "$key" <<'PY'
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+print(data.get(sys.argv[2], ""))
+PY
+}
+
+_good_oauth_token() {
+    _good_require_python
+    _good_require_curl
+
+    local site_base api_base result_file port state redirect_uri authorize_url
+    site_base="$(_good_site_base)"
+    api_base="$(_good_api_base)"
+    result_file="$(mktemp)"
+    port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+    state="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+    redirect_uri="http://127.0.0.1:${port}/callback"
+    authorize_url="${site_base}/gdview/authorize?client=good-cli&redirect_uri=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$redirect_uri")&state=${state}"
+
+    python3 - "$port" "$state" "$result_file" <<'PY' &
+import http.server, socketserver, urllib.parse, json, sys, threading
+
+port, state, result_file = map(str, sys.argv[1:4])
+result = {"ok": False}
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        return
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        code = (params.get("code") or [None])[0]
+        returned_state = (params.get("state") or [None])[0]
+        error = (params.get("error") or [None])[0]
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        body = """<!DOCTYPE html>
+<html lang="fr"><head><meta charset="utf-8"><title>Good CLI</title></head>
+<body style="font-family:system-ui;background:#111827;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">
+<div style="text-align:center;max-width:24rem;padding:2rem">
+<h1 style="font-size:1.125rem;margin:0 0 .5rem">Connexion réussie</h1>
+<p style="color:#9ca3af;margin:0">Retourne dans le terminal, tu peux fermer cette fenêtre.</p>
+</div></body></html>"""
+        self.wfile.write(body.encode("utf-8"))
+        if error:
+            result["error"] = error
+        elif code and returned_state == state:
+            result.update({"ok": True, "code": code, "redirect_uri": f"http://127.0.0.1:{port}/callback"})
+        else:
+            result["error"] = "Réponse OAuth invalide"
+        threading.Thread(target=self.server.shutdown, daemon=True).start()
+
+with socketserver.TCPServer(("127.0.0.1", int(port)), Handler) as httpd:
+    httpd.timeout = 300
+    httpd.handle_request()
+
+with open(result_file, "w") as f:
+    json.dump(result, f)
+PY
+    local server_pid=$!
+
+    echo "Connexion à Goodview..." >&2
+    echo "Ouvre le navigateur pour autoriser Good CLI." >&2
+    _good_open_url "$authorize_url"
+
+    local waited=0
+    while [ ! -s "$result_file" ] && [ "$waited" -lt 300 ]; do
+        sleep 1
+        waited=$((waited + 1))
+        if ! kill -0 "$server_pid" 2>/dev/null; then
+            break
+        fi
+    done
+    wait "$server_pid" 2>/dev/null || true
+
+    if [ ! -s "$result_file" ]; then
+        rm -f "$result_file"
+        echo "Erreur: délai OAuth dépassé." >&2
+        exit 1
+    fi
+
+    local oauth_payload token_response
+    oauth_payload="$(cat "$result_file")"
+    rm -f "$result_file"
+
+    if ! python3 - "$oauth_payload" <<'PY'
+import json, sys
+data = json.loads(sys.argv[1])
+sys.exit(0 if data.get("ok") else 1)
+PY
+    then
+        echo "Erreur: $(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("error","Connexion refusée"))' "$oauth_payload")" >&2
+        exit 1
+    fi
+
+    token_response="$(python3 - "$oauth_payload" "$api_base" <<'PY'
+import json, re, sys, urllib.error, urllib.request
+
+def format_http_error(status, body, content_type=""):
+    if "json" in content_type or body.lstrip().startswith("{"):
+        try:
+            data = json.loads(body)
+            return data.get("message") or json.dumps(data, ensure_ascii=False)
+        except json.JSONDecodeError:
+            pass
+    title = re.search(r"<title[^>]*>([^<]+)</title>", body, re.I)
+    if title:
+        return f"HTTP {status} — {title.group(1).strip()}"
+    snippet = next(
+        (line.strip() for line in body.splitlines() if line.strip() and not line.lstrip().startswith("<")),
+        "",
+    )
+    if snippet:
+        return f"HTTP {status} — {snippet[:120]}"
+    return (
+        f"HTTP {status} — réponse HTML inattendue "
+        "(vérifier GOODVIEW_URL=https://www.goodview.fr ou GOODVIEW_API)"
+    )
+
+payload = json.loads(sys.argv[1])
+api_base = sys.argv[2].rstrip("/")
+body = json.dumps({
+    "code": payload["code"],
+    "redirect_uri": payload["redirect_uri"],
+}).encode("utf-8")
+req = urllib.request.Request(
+    f"{api_base}/v1/gdview/token",
+    data=body,
+    headers={"Accept": "application/json", "Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read().decode("utf-8", errors="replace")
+        if raw.lstrip().startswith("<"):
+            message = format_http_error(
+                resp.status,
+                raw,
+                resp.headers.get("Content-Type", ""),
+            )
+            print(json.dumps({"error": message}, ensure_ascii=False))
+        else:
+            print(raw)
+except urllib.error.HTTPError as exc:
+    raw = exc.read().decode("utf-8", errors="replace")
+    message = format_http_error(exc.code, raw, exc.headers.get("Content-Type", ""))
+    print(json.dumps({"error": message, "status": exc.code}, ensure_ascii=False))
+except Exception as exc:
+    print(json.dumps({"error": str(exc)}, ensure_ascii=False))
+PY
+)"
+
+    if ! python3 - "$token_response" <<'PY'
+import json, re, sys
+
+try:
+    data = json.loads(sys.argv[1])
+except json.JSONDecodeError:
+    sys.exit(1)
+
+token = data.get("token")
+if not isinstance(token, str) or not re.fullmatch(r"\d+\|[A-Za-z0-9]+", token):
+    sys.exit(1)
+sys.exit(0)
+PY
+    then
+        echo "Erreur: échange OAuth impossible." >&2
+        if python3 -c 'import json,sys; json.loads(sys.argv[1])' "$token_response" 2>/dev/null; then
+            python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d.get("message") or d.get("error") or d)' "$token_response" >&2
+        else
+            _good_format_http_error "?" "$token_response" >&2
+        fi
+        exit 1
+    fi
+
+    if ! python3 - "$token_response" <<'PY'
+import json, sys
+data = json.loads(sys.argv[1])
+sys.exit(0 if data.get("user", {}).get("is_admin") else 1)
+PY
+    then
+        echo "Erreur: un compte administrateur Goodview est requis pour lier un projet." >&2
+        exit 1
+    fi
+
+    python3 - "$token_response" <<'PY'
+import json, re, sys
+
+data = json.loads(sys.argv[1])
+token = data["token"]
+if not re.fullmatch(r"\d+\|[A-Za-z0-9]+", token):
+    print("Erreur: token OAuth invalide.", file=sys.stderr)
+    sys.exit(1)
+print(token)
+PY
+}
+
+_good_api_request() {
+    local method="$1" path="$2" token="$3" body="${4:-}"
+    local api_base tmp http_code response
+    api_base="$(_good_api_base)"
+    tmp="$(mktemp)"
+    if [ -n "$body" ]; then
+        http_code="$(curl -sS -o "$tmp" -w "%{http_code}" -X "$method" \
+            -H "Authorization: Bearer $token" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            -d "$body" \
+            "${api_base}${path}")"
+    else
+        http_code="$(curl -sS -o "$tmp" -w "%{http_code}" -X "$method" \
+            -H "Authorization: Bearer $token" \
+            -H "Accept: application/json" \
+            "${api_base}${path}")"
+    fi
+    response="$(cat "$tmp")"
+    rm -f "$tmp"
+    if [ "${http_code:0:1}" != "2" ]; then
+        local err_msg
+        err_msg="$(_good_format_http_error "$http_code" "$response")"
+        python3 -c 'import json,sys; print(json.dumps({"error": sys.argv[1], "status": int(sys.argv[2])}, ensure_ascii=False))' "$err_msg" "$http_code"
+        return
+    fi
+    echo "$response"
+}
+
+_good_fetch_projects() {
+    local token="$1"
+    python3 - "$token" "$(_good_api_base)" <<'PY'
+import json, re, sys, urllib.error, urllib.request
+
+def format_http_error(status, body, content_type=""):
+    if "json" in content_type or body.lstrip().startswith("{"):
+        try:
+            data = json.loads(body)
+            return data.get("message") or json.dumps(data, ensure_ascii=False)
+        except json.JSONDecodeError:
+            pass
+    title = re.search(r"<title[^>]*>([^<]+)</title>", body, re.I)
+    if title:
+        return f"HTTP {status} — {title.group(1).strip()}"
+    snippet = next(
+        (line.strip() for line in body.splitlines() if line.strip() and not line.lstrip().startswith("<")),
+        "",
+    )
+    if snippet:
+        return f"HTTP {status} — {snippet[:120]}"
+    return (
+        f"HTTP {status} — réponse HTML inattendue "
+        "(vérifier GOODVIEW_URL=https://www.goodview.fr ou GOODVIEW_API)"
+    )
+
+token, api_base = sys.argv[1:3]
+req = urllib.request.Request(
+    f"{api_base.rstrip('/')}/v1/admin/projects",
+    headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+)
+try:
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        print(json.dumps(json.load(resp), ensure_ascii=False))
+except urllib.error.HTTPError as exc:
+    raw = exc.read().decode("utf-8", errors="replace")
+    print(format_http_error(exc.code, raw, exc.headers.get("Content-Type", "")), file=sys.stderr)
+    sys.exit(1)
+except urllib.error.URLError as exc:
+    print(f"Erreur réseau : {exc.reason}", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+_good_match_project_by_remote() {
+    local projects_json="$1" git_remote="$2"
+    python3 - "$projects_json" "$git_remote" <<'PY'
+import json, sys
+
+projects = json.loads(sys.argv[1]).get("data") or []
+git_remote = sys.argv[2].strip()
+slug = None
+if git_remote:
+    for prefix in ("git@github.com:", "https://github.com/", "http://github.com/"):
+        if git_remote.startswith(prefix):
+            slug = git_remote[len(prefix):].removesuffix(".git")
+            break
+if slug:
+    slug_lower = slug.lower()
+    for project in projects:
+        gh = (project.get("github_repo") or "").lower()
+        if gh == slug_lower:
+            print(project["id"])
+            break
+PY
+}
+
+_good_print_project_list() {
+    local projects_json="$1"
+    python3 - "$projects_json" <<'PY'
+import json, sys
+
+projects = json.loads(sys.argv[1]).get("data") or []
+print("Projets Goodview disponibles :", file=sys.stderr)
+for idx, project in enumerate(projects, start=1):
+    client = (project.get("client") or {}).get("name") or "Sans client"
+    gh = project.get("github_repo") or "—"
+    print(f"  {idx}. {project['name']} ({client}) — {gh}", file=sys.stderr)
+PY
+}
+
+_good_project_id_at_index() {
+    local projects_json="$1" index="$2"
+    python3 - "$projects_json" "$index" <<'PY'
+import json, sys
+
+projects = json.loads(sys.argv[1]).get("data") or []
+try:
+    num = int(sys.argv[2].strip())
+except ValueError:
+    sys.exit(1)
+if 1 <= num <= len(projects):
+    print(projects[num - 1]["id"])
+else:
+    sys.exit(1)
+PY
+}
+
+_good_select_project() {
+    local token="$1" git_remote="$2"
+    local projects_json project_id count choice
+
+    if ! projects_json="$(_good_fetch_projects "$token")"; then
+        exit 1
+    fi
+
+    if ! python3 - "$projects_json" <<'PY' >/dev/null 2>&1; then
+import json, sys
+json.loads(sys.argv[1]).get("data")
+PY
+        echo "Erreur: impossible de récupérer les projets." >&2
+        echo "$projects_json" >&2
+        exit 1
+    fi
+
+    count="$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1]).get("data") or []))' "$projects_json")"
+
+    if [ "$count" -eq 0 ]; then
+        echo "Erreur: aucun projet disponible sur Goodview." >&2
+        exit 1
+    fi
+
+    if [ "$count" -eq 1 ]; then
+        project_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["data"][0]["id"])' "$projects_json")"
+        echo "$project_id"
+        return 0
+    fi
+
+    project_id="$(_good_match_project_by_remote "$projects_json" "$git_remote" || true)"
+    if [ -n "$project_id" ]; then
+        echo "$project_id"
+        return 0
+    fi
+
+    _good_print_project_list "$projects_json"
+
+    if [ ! -t 0 ]; then
+        echo "Erreur: plusieurs projets disponibles — sélection interactive requise (terminal non interactif)." >&2
+        exit 1
+    fi
+
+    while true; do
+        read -rp "Numéro du projet à lier : " choice
+        if project_id="$(_good_project_id_at_index "$projects_json" "$choice" 2>/dev/null)"; then
+            echo "$project_id"
+            return 0
+        fi
+        echo "Choix invalide." >&2
+    done
+}
+
+_generate_commit_msg() {
+    local diff="$1"
+    _ai "Tu es un expert git. Génère UN message de commit concis en anglais au format Conventional Commits (ex: feat(auth): add JWT refresh, fix(api): handle null response).
+Analyse ce diff et retourne UNIQUEMENT le message de commit, sans guillemets, sans explication.
+
+DIFF:
+$diff"
+}
+
+_print_sep() {
+    echo "──────────────────────────────────────"
+}
+
+cmd_commit() {
+    _check_git
+    if ! _has_staged; then
+        if ! _has_changes; then
+            echo "Rien à committer."
+            exit 0
+        fi
+        echo "Stage de toutes les modifications..."
+        git add -A
+    fi
+    DIFF=$(git diff --cached --stat && printf '\n---\n' && git diff --cached)
+    echo "Génération du message de commit..."
+    MSG=$(_generate_commit_msg "$DIFF")
+    if [ -z "$MSG" ]; then
+        echo "Impossible de générer un message automatique."
+        read -rp "Message de commit: " MSG
+    fi
+    _print_sep
+    echo "Message proposé: $MSG"
+    _print_sep
+    read -rp "Valider? [Y/n/e=éditer] " ANSWER
+    case "${ANSWER,,}" in
+        n)    echo "Commit annulé."; exit 0 ;;
+        e)    read -rp "Nouveau message: " MSG ;;
+    esac
+    git commit -m "$MSG"
+    echo "✓ Commit: $MSG"
+}
+
+_good_push_hint_diverged() {
+    local branch="$1" behind="$2" ahead="$3"
+    echo ""
+    echo "Historiques divergés sur $branch : $ahead commit(s) local(aux), $behind commit(s) sur origin non intégrés."
+    echo "Git refuse le push tant que le distant n'est pas rebasé en local."
+    echo "→ Lance 'good s' (fetch + rebase + push)."
+    echo "   Manuel : git fetch origin && git rebase origin/$branch && git push"
+}
+
+cmd_push() {
+    _check_git
+    if _has_changes || _has_staged; then
+        cmd_commit
+    fi
+    BRANCH=$(git branch --show-current)
+    REMOTE=$(git remote get-url origin 2>/dev/null || echo "")
+    if [ -z "$REMOTE" ]; then
+        REPO=$(_repo_name)
+        echo "Aucun remote. Création du repo GitHub '$REPO'..."
+        read -rp "Repo privé? [Y/n] " PRIV
+        if [[ "${PRIV,,}" == "n" ]]; then
+            gh repo create "$REPO" --public --source=. --push
+        else
+            gh repo create "$REPO" --private --source=. --push
+        fi
+        echo "✓ Repo créé et pushé: $(git remote get-url origin)"
+    else
+        if ! git fetch origin "$BRANCH" 2>/dev/null; then
+            echo "Erreur fetch (vérifier la connexion, le remote ou gh auth status)."
+            exit 1
+        fi
+        BEHIND=$(git rev-list "HEAD..origin/$BRANCH" --count 2>/dev/null || echo "0")
+        AHEAD=$(git rev-list "origin/$BRANCH..HEAD" --count 2>/dev/null || echo "0")
+        if [ "$BEHIND" -gt 0 ]; then
+            _good_push_hint_diverged "$BRANCH" "$BEHIND" "$AHEAD"
+            exit 1
+        fi
+        if ! git push -u origin "$BRANCH"; then
+            echo ""
+            echo "Push refusé. Vérifiez les droits sur le dépôt (gh auth status) ou lancez 'good s' si le distant a évolué."
+            exit 1
+        fi
+        echo "✓ Pushé sur origin/$BRANCH"
+    fi
+}
+
+cmd_sync() {
+    _check_git
+    if _has_changes || _has_staged; then
+        echo "Changements locaux détectés → commit avant sync..."
+        cmd_commit
+    fi
+    BRANCH=$(git branch --show-current)
+    echo "Fetch origin..."
+    git fetch origin 2>/dev/null || { echo "Erreur fetch (vérifier la connexion/remote)"; exit 1; }
+    BEHIND=$(git rev-list "HEAD..origin/$BRANCH" --count 2>/dev/null || echo "0")
+    AHEAD=$(git rev-list "origin/$BRANCH..HEAD" --count 2>/dev/null || echo "0")
+    if [ "$BEHIND" -gt 0 ]; then
+        echo "$BEHIND commit(s) à intégrer depuis origin/$BRANCH..."
+        if ! git rebase "origin/$BRANCH"; then
+            echo ""
+            echo "Conflits détectés. Lance 'good resolve' pour les résoudre automatiquement."
+            exit 1
+        fi
+    fi
+    if [ "$AHEAD" -gt 0 ] || [ "$BEHIND" -gt 0 ]; then
+        git push -u origin "$BRANCH"
+        echo "✓ Sync terminé (origin/$BRANCH)"
+    else
+        echo "✓ Déjà à jour."
+    fi
+}
+
+cmd_resolve() {
+    _check_git
+    CONFLICTS=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
+    if [ -z "$CONFLICTS" ]; then
+        echo "Aucun conflit de fusion dans les fichiers."
+        if [ -d ".git/rebase-merge" ] || [ -d ".git/rebase-apply" ]; then
+            echo "Rebase en cours sans marqueurs de conflit — essayez : git rebase --continue"
+        else
+            echo "Si un push a échoué (historique divergé), utilisez 'good s' et non 'good r'."
+        fi
+        exit 0
+    fi
+    echo "Fichiers en conflit:"
+    echo "$CONFLICTS"
+    _print_sep
+    FAILED=()
+    for FILE in $CONFLICTS; do
+        echo "Résolution IA: $FILE"
+        CONTENT=$(cat "$FILE")
+        RESOLVED=$(_ai "Tu es un expert en résolution de conflits git.
+Analyse ce fichier avec des marqueurs de conflit (<<<<<<, =======, >>>>>>>) et résous-les intelligemment.
+Fusionne les deux versions quand c'est possible, ou choisit la meilleure version en fonction du contexte.
+Retourne UNIQUEMENT le contenu final du fichier, sans marqueurs de conflit, sans balises markdown.
+
+FICHIER: $FILE
+---
+$CONTENT" || echo "")
+        if [ -n "$RESOLVED" ]; then
+            echo "$RESOLVED" > "$FILE"
+            git add "$FILE"
+            echo "✓ Résolu: $FILE"
+        else
+            echo "✗ Résolution manuelle requise: $FILE"
+            FAILED+=("$FILE")
+        fi
+    done
+    if [ ${#FAILED[@]} -gt 0 ]; then
+        echo ""
+        echo "Fichiers à résoudre manuellement: ${FAILED[*]}"
+        exit 1
+    fi
+    if [ -d ".git/rebase-merge" ] || [ -d ".git/rebase-apply" ]; then
+        echo "Continuation du rebase..."
+        GIT_EDITOR=true git rebase --continue
+    elif [ -f ".git/MERGE_HEAD" ]; then
+        echo "Continuation du merge..."
+        cmd_commit
+    fi
+    echo "✓ Tous les conflits résolus."
+}
+
+cmd_init() {
+    _good_require_python
+    _good_require_curl
+
+    if ! git rev-parse --git-dir > /dev/null 2>&1; then
+        git init
+        echo "✓ Git initialisé"
+    fi
+
+    if [ -f "$(_good_config_file)" ]; then
+        read -rp "Projet déjà lié à Goodview. Relier? [y/N] " RELINK
+        if [[ "${RELINK,,}" != "y" ]]; then
+            echo "Annulé. Lance 'good info' pour voir la liaison actuelle."
+            exit 0
+        fi
+    fi
+
+    local token site_base api_base git_remote default_branch project_id link_body link_response
+    site_base="$(_good_site_base)"
+    api_base="$(_good_api_base)"
+    token="$(_good_oauth_token)"
+    git_remote="$(git remote get-url origin 2>/dev/null || true)"
+    default_branch="$(git branch --show-current 2>/dev/null || echo main)"
+
+    project_id="$(_good_select_project "$token" "$git_remote")"
+    link_body="$(python3 - "$project_id" "$git_remote" "$default_branch" "$(_good_root)" <<'PY'
+import json, sys
+print(json.dumps({
+    "project_id": int(sys.argv[1]),
+    "git_remote": sys.argv[2] or None,
+    "default_branch": sys.argv[3] or "main",
+    "local_path": sys.argv[4],
+}))
+PY
+)"
+
+    link_response="$(_good_api_request POST "/v1/admin/good-cli/link" "$token" "$link_body")"
+
+    if ! python3 - "$link_response" <<'PY'
+import json, sys
+data = json.loads(sys.argv[1])
+sys.exit(0 if data.get("data", {}).get("id") else 1)
+PY
+    then
+        echo "Erreur: liaison au projet impossible."
+        if python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d.get("message") or d.get("error") or d)' "$link_response" 2>/dev/null; then
+            :
+        else
+            _good_format_http_error "?" "$link_response"
+        fi
+        exit 1
+    fi
+
+    _good_save_config "$token" "$project_id" "$site_base" "$api_base"
+
+    python3 - "$link_response" <<'PY'
+import json, sys
+data = json.loads(sys.argv[1])["data"]
+client = (data.get("client") or {}).get("name") or "—"
+print(f"✓ Projet lié : {data['name']} ({client})")
+if data.get("github_url"):
+    print(f"  Dépôt : {data['github_url']}")
+if data.get("dev_url"):
+    print(f"  Dev : {data['dev_url']} ({data.get('dev_environment_name') or 'dev'})")
+if data.get("prod_url"):
+    print(f"  Prod : {data['prod_url']} ({data.get('prod_environment_name') or 'prod'})")
+print("  Config : .good/config.json (gitignored)")
+PY
+
+    if [ -z "$git_remote" ]; then
+        echo ""
+        echo "Aucun remote git configuré. Utilise 'good p' pour créer le repo GitHub et pousser."
+    fi
+}
+
+cmd_info() {
+    _good_require_python
+    _good_require_curl
+
+    local config_file="$(_good_config_file)"
+    if [ ! -f "$config_file" ]; then
+        echo "Ce dépôt n'est pas lié à Goodview."
+        echo "Lance 'good init' pour connecter le projet local."
+        exit 1
+    fi
+
+    local token project_id response
+    token="$(_good_load_config_value token)"
+    project_id="$(_good_load_config_value project_id)"
+
+    if [ -z "$token" ] || [ -z "$project_id" ]; then
+        echo "Configuration .good invalide. Relance 'good init'."
+        exit 1
+    fi
+
+    response="$(_good_api_request GET "/v1/admin/good-cli/projects/${project_id}" "$token")"
+
+    if ! python3 - "$response" <<'PY'
+import json, sys
+data = json.loads(sys.argv[1])
+sys.exit(0 if data.get("data", {}).get("id") else 1)
+PY
+    then
+        echo "Erreur: impossible de récupérer le projet (token expiré ?). Relance 'good init'."
+        if python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d.get("message") or d.get("error") or d)' "$response" 2>/dev/null; then
+            :
+        else
+            _good_format_http_error "?" "$response"
+        fi
+        exit 1
+    fi
+
+    python3 - "$response" "$config_file" <<'PY'
+import json, sys
+project = json.loads(sys.argv[1])["data"]
+with open(sys.argv[2]) as f:
+    local = json.load(f)
+
+print("Liaison Goodview")
+print("────────────────")
+print(f"Client    : {(project.get('client') or {}).get('name') or '—'}")
+print(f"Projet    : {project['name']} ({project.get('status_label') or project.get('status')})")
+print(f"Type      : {project.get('type_label') or project.get('type')}")
+print(f"Chemin    : {local.get('local_path') or '—'}")
+print(f"Lié le    : {local.get('linked_at') or '—'}")
+print(f"Goodview  : {local.get('site_base') or '—'}/admin/projects/{project['id']}/edit")
+
+if project.get("github_url"):
+    print(f"Dépôt     : {project['github_url']}")
+elif project.get("repos"):
+    print(f"Dépôt     : {project['repos'][0].get('url') or '—'}")
+
+git_remote = ""
+try:
+    import subprocess
+    git_remote = subprocess.check_output(
+        ["git", "remote", "get-url", "origin"],
+        stderr=subprocess.DEVNULL,
+        text=True,
+    ).strip()
+except Exception:
+    pass
+if git_remote:
+    print(f"Remote    : {git_remote}")
+
+if project.get("dev_url"):
+    print(f"Dev       : {project['dev_url']} ({project.get('dev_environment_name') or 'dev'})")
+if project.get("prod_url"):
+    print(f"Prod      : {project['prod_url']} ({project.get('prod_environment_name') or 'prod'})")
+PY
+}
+
+_ai_check_ollama() {
+    if ! command -v ollama >/dev/null 2>&1; then
+        echo "Erreur: Ollama n'est pas installé."
+        exit 1
+    fi
+    if ! ollama list >/dev/null 2>&1; then
+        echo "Erreur: Ollama ne répond pas. Lance 'ollama serve'."
+        exit 1
+    fi
+}
+
+_ai_gather_context() {
+    local instruction="$1" root config_file
+    root="$(_good_root)"
+    config_file="$(_good_config_file)"
+    python3 - "$root" "$config_file" "$instruction" <<'PY'
+import json, os, re, subprocess, sys
+
+root, config_file, instruction = sys.argv[1:4]
+lines = [f"Racine du projet: {root}"]
+
+if os.path.isfile(config_file):
+    with open(config_file) as f:
+        cfg = json.load(f)
+    cfg_safe = {k: v for k, v in cfg.items() if k != "token"}
+    lines.append("Liaison Goodview (.good/config.json, sans token):")
+    lines.append(json.dumps(cfg_safe, ensure_ascii=False, indent=2))
+
+try:
+    status = subprocess.check_output(
+        ["git", "status", "-s"],
+        cwd=root,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    ).strip()
+    if status:
+        lines.append("Git status (-s):")
+        lines.append(status)
+    else:
+        lines.append("Git status: propre")
+except Exception:
+    lines.append("Git status: indisponible")
+
+skip_dirs = {".git", "node_modules", "vendor", "dist", "build", ".next", "storage"}
+entries = []
+for dirpath, dirnames, filenames in os.walk(root):
+    dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".")]
+    rel_dir = os.path.relpath(dirpath, root)
+    depth = 0 if rel_dir == "." else rel_dir.count(os.sep) + 1
+    if depth > 2:
+        dirnames.clear()
+        continue
+    for name in sorted(filenames):
+        if name.startswith(".") and name not in {".env", ".env.example", ".gitignore"}:
+            continue
+        rel = name if rel_dir == "." else os.path.join(rel_dir, name)
+        entries.append(rel)
+    if len(entries) >= 80:
+        break
+if entries:
+    lines.append("Fichiers clés (max 80):")
+    lines.append("\n".join(entries[:80]))
+
+mentioned = set()
+for match in re.findall(
+    r"(?:^|[\s'\"`])([\w./-]+\.(?:env(?:\.\w+)?|json|ya?ml|php|ts|tsx|js|jsx|vue|md|txt|sh|toml|ini|xml|css|py|rb|sql|lock))\b|(?:^|[\s'\"`])(\.env(?:\.\w+)?)\b",
+    instruction,
+    re.I,
+):
+    for part in match:
+        if part:
+            mentioned.add(part.lstrip("./"))
+
+for rel in sorted(mentioned):
+    path = os.path.normpath(os.path.join(root, rel))
+    if not path.startswith(os.path.realpath(root) + os.sep):
+        continue
+    if not os.path.isfile(path):
+        lines.append(f"Fichier mentionné absent: {rel}")
+        continue
+    if os.path.getsize(path) > 120_000:
+        lines.append(f"Fichier mentionné trop volumineux: {rel}")
+        continue
+    with open(path, errors="replace") as f:
+        content = f.read()
+    lines.append(f"Contenu actuel de {rel}:")
+    lines.append("---")
+    lines.append(content)
+    lines.append("---")
+
+print("\n".join(lines))
+PY
+}
+
+_ai_request_task() {
+    local instruction="$1" context="$2"
+    _ai "Tu es un assistant de développement pour le CLI « good ».
+L'utilisateur donne une instruction en français. Analyse le contexte du projet et propose des modifications de fichiers concrètes.
+
+Règles strictes:
+- Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant ou après
+- Format exact:
+{\"summary\":\"résumé en français\",\"files\":[{\"path\":\"chemin/relatif\",\"action\":\"create|modify|delete\",\"content\":\"contenu complet\"}]}
+- action \"delete\" sans champ content
+- Ne propose AUCUNE commande shell
+- Chemins relatifs à la racine du projet, pas de .. ni de chemins absolus
+- Ne modifie jamais .good/config.json
+- Pour modifier un fichier existant, renvoie le contenu COMPLET du fichier après modification
+- Si l'instruction est impossible ou ambiguë, renvoie {\"summary\":\"...\",\"files\":[]}
+
+CONTEXTE PROJET:
+$context
+
+INSTRUCTION UTILISATEUR:
+$instruction"
+}
+
+_ai_parse_task_response() {
+    python3 - "$1" <<'PY'
+import json, re, sys
+
+raw = sys.argv[1]
+start = raw.find("{")
+end = raw.rfind("}")
+if start < 0 or end <= start:
+    print("Erreur: réponse IA sans JSON.", file=sys.stderr)
+    sys.exit(1)
+try:
+    data = json.loads(raw[start:end + 1])
+except json.JSONDecodeError as exc:
+    print(f"Erreur: JSON IA invalide ({exc}).", file=sys.stderr)
+    sys.exit(1)
+if not isinstance(data, dict):
+    print("Erreur: format IA inattendu.", file=sys.stderr)
+    sys.exit(1)
+data.setdefault("summary", "")
+data.setdefault("files", [])
+if not isinstance(data["files"], list):
+    print("Erreur: liste files invalide.", file=sys.stderr)
+    sys.exit(1)
+print(json.dumps(data, ensure_ascii=False))
+PY
+}
+
+_ai_validate_task() {
+    local root="$1" payload="$2"
+    python3 - "$root" "$payload" <<'PY'
+import json, os, sys
+
+root = os.path.realpath(sys.argv[1])
+data = json.loads(sys.argv[2])
+valid_files = []
+errors = []
+
+for item in data.get("files") or []:
+    if not isinstance(item, dict):
+        errors.append("Entrée fichier invalide.")
+        continue
+    path = (item.get("path") or "").strip().replace("\\", "/")
+    action = (item.get("action") or "").strip().lower()
+    if not path or path.startswith("/") or ".." in path.split("/"):
+        errors.append(f"Chemin refusé: {path or '?'}")
+        continue
+    norm = os.path.normpath(path)
+    if norm.startswith("..") or norm == ".good/config.json" or norm.startswith(".good/"):
+        errors.append(f"Chemin protégé ou hors dépôt: {path}")
+        continue
+    full = os.path.realpath(os.path.join(root, norm))
+    if not (full == root or full.startswith(root + os.sep)):
+        errors.append(f"Hors du dépôt: {path}")
+        continue
+    if full.startswith(os.path.join(root, ".git") + os.sep) or full == os.path.join(root, ".git"):
+        errors.append(f"Modification .git interdite: {path}")
+        continue
+    if action not in {"create", "modify", "delete"}:
+        errors.append(f"Action inconnue pour {path}: {action}")
+        continue
+    if action in {"create", "modify"} and not isinstance(item.get("content"), str):
+        errors.append(f"Contenu manquant pour {path}")
+        continue
+    if action == "modify" and not os.path.isfile(full):
+        errors.append(f"Fichier absent pour modification: {path}")
+        continue
+    if action == "create" and os.path.exists(full):
+        errors.append(f"Fichier déjà présent (utilise modify): {path}")
+        continue
+    if action == "delete" and not os.path.exists(full):
+        errors.append(f"Fichier absent pour suppression: {path}")
+        continue
+    valid_files.append({"path": norm, "action": action, "content": item.get("content", "")})
+
+if errors:
+    for err in errors:
+        print(err, file=sys.stderr)
+    sys.exit(1)
+
+data["files"] = valid_files
+print(json.dumps(data, ensure_ascii=False))
+PY
+}
+
+_ai_preview_task() {
+    local root="$1" payload="$2"
+    python3 - "$root" "$payload" <<'PY'
+import difflib, json, os, re, sys
+
+root = sys.argv[1]
+data = json.loads(sys.argv[2])
+secret_re = re.compile(r"(secret|token|password|api[_-]?key|private[_-]?key)", re.I)
+
+def mask_line(line):
+    if secret_re.search(line) and "=" in line:
+        key, _, _ = line.partition("=")
+        return f"{key}=***"
+    return line
+
+print(data.get("summary") or "Modifications proposées")
+print()
+
+for item in data.get("files") or []:
+    path = item["path"]
+    action = item["action"]
+    print(f"[{action.upper()}] {path}")
+    if action == "delete":
+        continue
+    new_lines = item["content"].splitlines(keepends=True)
+    full = os.path.join(root, path)
+    if action == "modify" and os.path.isfile(full):
+        with open(full, errors="replace") as f:
+            old_lines = f.readlines()
+        diff = difflib.unified_diff(
+            [mask_line(l.rstrip("\n")) + "\n" for l in old_lines],
+            [mask_line(l.rstrip("\n")) + "\n" for l in new_lines],
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+            lineterm="",
+        )
+        shown = False
+        for line in diff:
+            shown = True
+            print(line.rstrip("\n"))
+        if not shown:
+            print("  (aucun changement de contenu détecté)")
+    else:
+        preview = "".join(mask_line(l.rstrip("\n")) + "\n" for l in new_lines[:40])
+        print(preview.rstrip())
+        if len(new_lines) > 40:
+            print(f"  ... ({len(new_lines) - 40} lignes supplémentaires)")
+    print()
+PY
+}
+
+_ai_apply_task() {
+    local root="$1" payload="$2"
+    python3 - "$root" "$payload" <<'PY'
+import json, os, sys
+
+root = sys.argv[1]
+data = json.loads(sys.argv[2])
+
+for item in data.get("files") or []:
+    path = item["path"]
+    action = item["action"]
+    full = os.path.join(root, path)
+    if action == "delete":
+        os.remove(full)
+        print(f"✓ Supprimé: {path}")
+    elif action == "create":
+        os.makedirs(os.path.dirname(full) or root, exist_ok=True)
+        with open(full, "w") as f:
+            f.write(item["content"])
+        print(f"✓ Créé: {path}")
+    else:
+        with open(full, "w") as f:
+            f.write(item["content"])
+        print(f"✓ Modifié: {path}")
+PY
+}
+
+_ai_confirm() {
+    local prompt="$1"
+    read -rp "$prompt [Y/n] " ANSWER
+    case "${ANSWER,,}" in
+        n|non)
+            return 1
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+_ai_classify_intent() {
+    local instruction="$1"
+    python3 - "$instruction" <<'PY'
+import re, sys, unicodedata
+
+def normalize(text):
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    return text.lower()
+
+text = normalize(sys.argv[1])
+
+diagnose_patterns = [
+    r"refus", r"refused", r"connexion", r"connection", r"inaccessible",
+    r"ne repond", r"ne marche", r"marche pas", r"erreur", r"error",
+    r"\bport\b", r"\bdown\b", r"arrete", r"502", r"503", r"504",
+    r"timeout", r"timed out", r"echec", r"échec", r"diagnostic", r"diagnostique",
+]
+start_patterns = [
+    r"\blance\b", r"\blancer\b", r"\bdemarre\b", r"\bdemarrer\b",
+    r"\bstart\b", r"\brun\b", r"\bouvre\b", r"\bboot\b", r"\bserve\b",
+    r"\blance le projet\b", r"\bdemarre le projet\b",
+]
+
+diagnose_score = sum(1 for p in diagnose_patterns if re.search(p, text))
+start_score = sum(1 for p in start_patterns if re.search(p, text))
+
+if diagnose_score > 0 and re.search(r"refus|refused|connexion|connection", text):
+    print("diagnose")
+elif start_score > diagnose_score and start_score > 0:
+    print("start")
+elif diagnose_score > 0:
+    print("diagnose")
+elif start_score > 0:
+    print("start")
+else:
+    print("edit")
+PY
+}
+
+_ai_project_info() {
+    local root="$1"
+    python3 - "$root" <<'PY'
+import json, os, sys
+
+root = sys.argv[1]
+info = {
+    "kind": "generic",
+    "start_commands": [],
+    "checks": [],
+}
+
+composer_path = os.path.join(root, "composer.json")
+package_path = os.path.join(root, "package.json")
+
+if os.path.isfile(composer_path):
+    with open(composer_path) as f:
+        scripts = json.load(f).get("scripts", {})
+    if "dev" in scripts:
+        info["start_commands"].append("composer dev")
+    elif "stack:up" in scripts:
+        info["start_commands"].append("composer stack:up")
+    if os.path.isfile(os.path.join(root, "artisan")):
+        info["kind"] = "laravel"
+        info["checks"] = [
+            {"name": "Laravel", "url": "http://127.0.0.1:8000", "port": 8000},
+            {"name": "Vite", "url": "http://127.0.0.1:5173", "port": 5173},
+        ]
+
+if os.path.isfile(package_path):
+    with open(package_path) as f:
+        pkg = json.load(f)
+    scripts = pkg.get("scripts", {})
+    if "dev" in scripts and not info["start_commands"]:
+        info["start_commands"].append("npm run dev")
+        info["checks"].append(
+            {"name": "Dev server", "url": "http://127.0.0.1:5173", "port": 5173}
+        )
+
+if info["kind"] == "laravel" and not info["checks"]:
+    info["checks"] = [
+        {"name": "Laravel", "url": "http://127.0.0.1:8000", "port": 8000},
+        {"name": "Vite", "url": "http://127.0.0.1:5173", "port": 5173},
+    ]
+
+print(json.dumps(info, ensure_ascii=False))
+PY
+}
+
+_ai_is_safe_run_command() {
+    local cmd="$1"
+    python3 - "$cmd" <<'PY'
+import re, sys
+
+cmd = sys.argv[1].strip()
+allowed = {
+    "composer dev",
+    "composer stack:up",
+    "composer postgres:up",
+    "npm run dev",
+    "bash docker/scripts/ensure-dev-up.sh",
+}
+if cmd not in allowed:
+    print(f"Commande non autorisée: {cmd}", file=sys.stderr)
+    sys.exit(1)
+if re.search(r"[;|&`$()<>]", cmd):
+    print("Caractères shell interdits dans la commande.", file=sys.stderr)
+    sys.exit(1)
+destructive = re.compile(
+    r"\b(rm|mv|dd|mkfs|shutdown|reboot|kill|git|docker\s+down|truncate|drop)\b",
+    re.I,
+)
+if destructive.search(cmd):
+    print("Commande potentiellement destructive refusée.", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+_ai_service_status_json() {
+    local root="$1" info_json="$2"
+    python3 - "$root" "$info_json" <<'PY'
+import json, os, shutil, subprocess, sys, urllib.error, urllib.request
+
+root = sys.argv[1]
+info = json.loads(sys.argv[2])
+
+services = []
+for check in info.get("checks") or []:
+    url = check["url"]
+    name = check["name"]
+    status = "down"
+    detail = ""
+    try:
+        req = urllib.request.Request(url, method="GET", headers={"User-Agent": "good-cli"})
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            status = "up"
+            detail = f"HTTP {resp.status}"
+    except urllib.error.HTTPError as exc:
+        status = "up"
+        detail = f"HTTP {exc.code}"
+    except Exception as exc:
+        detail = str(exc)
+        low = detail.lower()
+        if "refused" in low or "timed out" in low or "timeout" in low:
+            status = "down"
+        else:
+            status = "down"
+    services.append({**check, "status": status, "detail": detail})
+
+docker_lines = []
+if shutil.which("docker"):
+    try:
+        out = subprocess.check_output(
+            ["docker", "ps", "--format", "{{.Names}}\t{{.Status}}"],
+            text=True,
+            timeout=5,
+        ).strip()
+        docker_lines = [line for line in out.splitlines() if line.strip()]
+    except Exception as exc:
+        docker_lines = [f"docker ps échoué: {exc}"]
+else:
+    docker_lines = ["docker non installé ou absent du PATH"]
+
+env_hints = []
+env_path = os.path.join(root, ".env")
+if os.path.isfile(env_path):
+    env = {}
+    with open(env_path) as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            env[key.strip()] = value.strip().strip('"').strip("'")
+    app_url = env.get("APP_URL", "")
+    if app_url and "127.0.0.1:8000" not in app_url and "localhost:8000" not in app_url:
+        env_hints.append(
+            f"APP_URL={app_url} — en local, utilisez http://127.0.0.1:8000"
+        )
+    if not env.get("APP_KEY"):
+        env_hints.append("APP_KEY vide — lancez: php artisan key:generate")
+    db_host = env.get("DB_HOST", "")
+    if db_host == "postgres" and not docker_lines:
+        env_hints.append(
+            "DB_HOST=postgres nécessite Docker — lancez composer stack:up avant composer dev"
+        )
+elif os.path.isfile(os.path.join(root, ".env.example")):
+    env_hints.append(".env absent — copiez .env.example vers .env puis configurez APP_KEY")
+
+laravel_up = any(s["name"] == "Laravel" and s["status"] == "up" for s in services)
+vite_up = any(s["name"] == "Vite" and s["status"] == "up" for s in services)
+all_up = bool(services) and all(s["status"] == "up" for s in services)
+
+print(
+    json.dumps(
+        {
+            "services": services,
+            "docker": docker_lines,
+            "env_hints": env_hints,
+            "all_up": all_up,
+            "laravel_up": laravel_up,
+            "vite_up": vite_up,
+        },
+        ensure_ascii=False,
+    )
+)
+PY
+}
+
+_ai_print_diagnosis() {
+    local status_json="$1" info_json="$2"
+    python3 - "$status_json" "$info_json" <<'PY'
+import json, sys
+
+status = json.loads(sys.argv[1])
+info = json.loads(sys.argv[2])
+
+print("=== Diagnostic ===")
+print()
+
+for svc in status.get("services") or []:
+    name = svc["name"]
+    url = svc["url"]
+    if svc["status"] == "up":
+        print(f"✓ {name} ({url}) — {svc.get('detail') or 'répond'}")
+    else:
+        print(f"✗ {name} ({url}) — connexion refusée ou service arrêté")
+        if name == "Laravel":
+            print("  → Le serveur Laravel n'est pas lancé. Lancez `composer dev` dans le projet.")
+            print("  → Si Docker/Postgres est requis : `composer stack:up` puis `composer dev`.")
+        elif name == "Vite":
+            print("  → Vite ne répond pas sur le port 5173.")
+            print("  → Avec goodview.fr, Vite est inclus dans `composer dev` (npm run dev).")
+
+print()
+print("=== Docker ===")
+for line in status.get("docker") or ["aucun conteneur listé"]:
+    print(f"  {line}")
+
+if status.get("env_hints"):
+    print()
+    print("=== Suggestions .env ===")
+    for hint in status["env_hints"]:
+        print(f"  • {hint}")
+
+if info.get("kind") == "laravel" and not status.get("laravel_up"):
+    print()
+    print(
+        "Astuce : « connection refused » sur http://127.0.0.1:8000 signifie "
+        "que `bin/artisan serve` n'est pas actif — pas un problème de .env seul."
+    )
+PY
+}
+
+_ai_run_in_background() {
+    local root="$1" cmd="$2"
+    local log_dir log_file pid_file
+    if ! _ai_is_safe_run_command "$cmd"; then
+        return 1
+    fi
+    log_dir="$(_good_config_dir)"
+    mkdir -p "$log_dir"
+    log_file="$log_dir/dev.log"
+    pid_file="$log_dir/dev.pid"
+
+    echo "Démarrage en arrière-plan..."
+    echo "  Commande : $cmd"
+    echo "  Dossier  : $root"
+    echo "  Logs     : $log_file"
+    (
+        cd "$root"
+        nohup bash -lc "$cmd" >> "$log_file" 2>&1 &
+        echo $! > "$pid_file"
+    )
+    sleep 4
+    echo ""
+    echo "Vérification des services après démarrage..."
+    local info_json status_json
+    info_json="$(_ai_project_info "$root")"
+    status_json="$(_ai_service_status_json "$root" "$info_json")"
+    _ai_print_diagnosis "$status_json" "$info_json"
+    if python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("all_up"))' "$status_json" | grep -qx True; then
+        echo ""
+        echo "✓ Services opérationnels."
+    else
+        echo ""
+        echo "Les services ne répondent pas encore — consultez les logs : tail -f $log_file"
+    fi
+}
+
+_ai_handle_start() {
+    local instruction="$1" root info_json start_cmd status_json
+    root="$(_good_root)"
+    info_json="$(_ai_project_info "$root")"
+    start_cmd="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); cmds=d.get("start_commands") or []; print(cmds[0] if cmds else "")' "$info_json")"
+
+    if [ -z "$start_cmd" ]; then
+        echo "Aucune commande de démarrage détectée (composer dev ou npm run dev dans composer.json / package.json)."
+        exit 1
+    fi
+
+    echo "Vérification des services..."
+    status_json="$(_ai_service_status_json "$root" "$info_json")"
+    _ai_print_diagnosis "$status_json" "$info_json"
+
+    if python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("all_up"))' "$status_json" | grep -qx True; then
+        echo ""
+        echo "✓ Le projet semble déjà en cours d'exécution."
+        return 0
+    fi
+
+    _print_sep
+    echo "Commande proposée :"
+    echo "  $start_cmd"
+    echo "  (dans $root)"
+    echo "  Logs : $(_good_config_dir)/dev.log"
+    _print_sep
+    if _ai_confirm "Exécuter cette commande?"; then
+        _ai_run_in_background "$root" "$start_cmd"
+    else
+        echo "Commande non exécutée."
+    fi
+}
+
+_ai_handle_diagnose() {
+    local instruction="$1" root info_json start_cmd status_json
+    root="$(_good_root)"
+    info_json="$(_ai_project_info "$root")"
+    start_cmd="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); cmds=d.get("start_commands") or []; print(cmds[0] if cmds else "")' "$info_json")"
+    status_json="$(_ai_service_status_json "$root" "$info_json")"
+
+    _ai_print_diagnosis "$status_json" "$info_json"
+
+    if ! python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("all_up"))' "$status_json" | grep -qx True; then
+        if [ -n "$start_cmd" ]; then
+            echo ""
+            if _ai_confirm "Lancer le projet avec $start_cmd?"; then
+                _ai_run_in_background "$root" "$start_cmd"
+            fi
+        fi
+    fi
+
+    if python3 -c 'import json,sys; print(len(json.loads(sys.argv[1]).get("env_hints") or []))' "$status_json" | grep -qv '^0$'; then
+        echo ""
+        if _ai_confirm "Proposer des corrections .env via l'IA (modification de fichiers)?"; then
+            _ai_handle_edit "Corrige le fichier .env selon les suggestions du diagnostic : ${instruction}"
+        fi
+    fi
+}
+
+_ai_handle_edit() {
+    local instruction="$1"
+    _ai_check_ollama
+
+    local root context raw_response payload
+    root="$(_good_root)"
+
+    echo "Analyse du projet et génération des modifications..."
+    context="$(_ai_gather_context "$instruction")"
+    raw_response="$(_ai_request_task "$instruction" "$context" || true)"
+    if [ -z "$raw_response" ]; then
+        echo "Erreur: l'IA n'a pas répondu. Vérifie qu'Ollama tourne avec qwen3:8b."
+        exit 1
+    fi
+
+    if ! payload="$(_ai_parse_task_response "$raw_response")"; then
+        exit 1
+    fi
+
+    local file_count
+    file_count="$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1]).get("files") or []))' "$payload")"
+    if [ "$file_count" -eq 0 ]; then
+        summary="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("summary") or "Aucune modification proposée.")' "$payload")"
+        echo "$summary"
+        exit 0
+    fi
+
+    if ! payload="$(_ai_validate_task "$root" "$payload")"; then
+        echo "Modifications refusées pour des raisons de sécurité."
+        exit 1
+    fi
+
+    _print_sep
+    _ai_preview_task "$root" "$payload"
+    _print_sep
+    read -rp "Appliquer ces modifications? [Y/n/e=éditer l'instruction] " ANSWER
+    case "${ANSWER,,}" in
+        n)
+            echo "Modifications annulées."
+            exit 0
+            ;;
+        e)
+            read -rp "Nouvelle instruction: " instruction
+            if [ -z "$instruction" ]; then
+                echo "Instruction vide — annulé."
+                exit 0
+            fi
+            cmd_ai "$instruction"
+            return
+            ;;
+    esac
+
+    _ai_apply_task "$root" "$payload"
+    echo "✓ Modifications appliquées."
+}
+
+cmd_ai() {
+    local instruction="${*:-}"
+    if [ -z "$instruction" ]; then
+        echo "Usage: good ai <instruction>"
+        echo "       good do <instruction>"
+        echo "       good '#' '<instruction>'   (syntaxe « # message », entre guillemets)"
+        echo ""
+        echo "Exemples:"
+        echo "  good ai lance le projet"
+        echo "  good ai connection refused sur 8000"
+        echo "  good ai modifier .env pour ajouter TERMINAL_SERVICE_SECRET"
+        exit 1
+    fi
+
+    _check_git
+
+    local intent
+    intent="$(_ai_classify_intent "$instruction")"
+    case "$intent" in
+        start)
+            _ai_handle_start "$instruction"
+            ;;
+        diagnose)
+            _ai_handle_diagnose "$instruction"
+            ;;
+        *)
+            _ai_handle_edit "$instruction"
+            ;;
+    esac
+}
+
+cmd_log()    { _check_git; git log --oneline --graph --decorate -20; }
+cmd_status() { _check_git; git status -s; _print_sep; git log --oneline -5; }
+cmd_help() {
+    cat <<'EOF'
+good - Git + Goodview (IA locale via Ollama)
+
+  c, commit    Stage tout + génère message AI + commit
+  p, push      Commit si besoin + push GitHub (crée le repo si absent)
+  s, sync      Commit + fetch + rebase + push
+  r, resolve   Résout les conflits git avec l'IA
+  ai, do       Instruction en langage naturel → lancer, diagnostiquer ou modifier (IA)
+               Syntaxe « # message » : good '#' 'lance le projet'
+  i, init      Initialise git + lie le dépôt à un projet Goodview (OAuth)
+  info         Affiche la liaison Goodview du dépôt local
+  l, log       Log git graphique (20 derniers commits)
+  st, status   Status court + derniers commits
+
+Variables d'environnement :
+  GOODVIEW_URL  URL du site (défaut: https://www.goodview.fr)
+  GOODVIEW_API  URL de l'API (défaut: GOODVIEW_URL/api)
+EOF
+}
+
+case "$COMMAND" in
+    c|commit)   cmd_commit  ;;
+    p|push)     cmd_push    ;;
+    s|sync)     cmd_sync    ;;
+    r|resolve)  cmd_resolve ;;
+    ai|do)
+        shift
+        cmd_ai "$@"
+        ;;
+    \#)
+        shift
+        cmd_ai "$@"
+        ;;
+    i|init)     cmd_init    ;;
+    info)       cmd_info    ;;
+    l|log)      cmd_log     ;;
+    st|status)  cmd_status  ;;
+    help|-h|--help) cmd_help ;;
+    *) echo "Commande inconnue: $COMMAND"; cmd_help; exit 1 ;;
+esac

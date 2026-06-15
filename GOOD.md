@@ -86,21 +86,106 @@ Ce que ça fait :
 
 ---
 
-### `good i` — Initialiser un nouveau projet
+### `good i` — Initialiser et lier à Goodview
 
-**Quand l'utiliser :** pour un tout nouveau projet qui n'est pas encore sur GitHub.
+**Quand l'utiliser :** pour un nouveau dépôt local que tu veux rattacher à un projet client Goodview.
 
 Ce que ça fait :
-1. `git init` — initialise le dépôt local
-2. Premier commit automatique
-3. Crée le repo sur GitHub (public ou privé, à ton choix)
-4. Configure le remote et push
+1. `git init` si le dossier n'est pas encore un dépôt git
+2. Ouvre le navigateur pour une connexion OAuth Goodview (compte admin requis)
+3. Te propose de choisir le projet client à lier (auto-détection si le remote GitHub correspond)
+4. Enregistre la liaison dans `.good/config.json` (gitignored, permissions 600)
+5. Attache le dépôt GitHub au projet Goodview si le remote `origin` est reconnu
 
 ```bash
-cd mon-nouveau-projet
-good i
-# → Repo privé? [Y/n]
+cd mon-projet
+good init
+# → Connexion OAuth dans le navigateur
+# → Sélection du projet Goodview
 ```
+
+Variables utiles pour le dev local :
+```bash
+export GOODVIEW_URL=http://localhost:8000
+good init
+```
+
+En production, l'URL par défaut est `https://www.goodview.fr` (`goodview.fr` redirige le navigateur mais son API `/api/*` pointe vers un autre site).
+
+---
+
+### `good info` — Voir la liaison Goodview
+
+Affiche le client, le projet, les URLs d'environnement et le dépôt liés au dossier courant.
+
+Si le dépôt n'est pas lié, invite à lancer `good init`.
+
+---
+
+### `good ai` / `good do` — Tâche en langage naturel
+
+**Quand l'utiliser :** pour agir sur le projet sans tout faire à la main — lancer les services,
+diagnostiquer une erreur « connection refused », ou modifier des fichiers via l'IA.
+
+Syntaxe bash (le `#` seul démarre un commentaire, d'où ces formes) :
+
+```bash
+good ai lance le projet
+good ai connection refused sur 8000
+good ai demarre le projet ilo est refused
+good ai occupe-toi de modifier .env pour ajouter TERMINAL_SERVICE_SECRET
+good do ajoute une route health dans routes/api.php
+good '#' 'lance le projet'   # syntaxe « # message »
+```
+
+#### Types d'actions
+
+| Intent détecté | Mots-clés typiques | Action |
+|---|---|---|
+| **Démarrage** | lance, démarre, start, run | Vérifie les ports, propose `composer dev` ou `npm run dev` |
+| **Diagnostic** | refused, connexion, port, erreur | Teste Laravel (8000), Vite (5173), `docker ps`, lit `.env` |
+| **Modification** | modifier, ajoute, corrige, fichier | Propose des edits JSON comme avant (Ollama requis) |
+
+Pour **goodview.fr** :
+- Démarrage : `composer dev` (inclut `composer stack:up` + artisan + Vite)
+- Vérifications : http://127.0.0.1:8000 et port 5173
+- Messages « connexion refusée » en français avec pistes de correction
+
+#### Démarrage / diagnostic
+
+1. Détecte le type de projet (`composer.json`, `package.json`, `artisan`)
+2. Vérifie si les services répondent déjà
+3. Affiche un diagnostic (services, Docker, suggestions `.env`)
+4. Propose d'exécuter la commande de démarrage — **confirmation obligatoire** :
+
+```
+Exécuter cette commande? [Y/n]
+  Y  → lance en arrière-plan (logs dans `.good/dev.log`)
+  n  → annule
+```
+
+Commandes exécutables (liste blanche, jamais destructives) :
+`composer dev`, `composer stack:up`, `composer postgres:up`, `npm run dev`,
+`bash docker/scripts/ensure-dev-up.sh`
+
+#### Modifications de fichiers (intent « edit »)
+
+1. Rassemble le contexte (racine git, liaison Goodview, `git status`, fichiers clés)
+2. Demande à l'IA (Ollama) de proposer des modifications concrètes en JSON
+3. Affiche un aperçu (diff masqué pour secrets) — validation comme `good c` :
+
+```
+Appliquer ces modifications? [Y/n/e=éditer l'instruction]
+  Y  → écrit les fichiers
+  n  → annule
+  e  → saisir une nouvelle instruction et relancer
+```
+
+Sécurité :
+- Uniquement des fichiers dans le dépôt git (pas de `..`, pas de `.git/`)
+- `.good/config.json` et tout `.good/` sont protégés
+- Aucune commande shell destructrice ; exécution uniquement sur liste blanche
+- Les valeurs sensibles (SECRET, TOKEN, PASSWORD…) sont masquées à l'affichage
 
 ---
 
@@ -127,11 +212,13 @@ Affiche en deux blocs :
 ## Résumé visuel
 
 ```
-Nouveau projet          →  good i
+Nouveau projet          →  good init (+ good p pour GitHub)
+Voir liaison Goodview   →  good info
 Sauvegarder             →  good c
 Envoyer sur GitHub      →  good p
 Récupérer + envoyer     →  good s
 Conflit à résoudre      →  good r
+Tâche IA (action)      →  good ai <instruction>
 Voir l'historique       →  good l
 Voir l'état             →  good st
 ```
