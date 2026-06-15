@@ -2,17 +2,164 @@
 # good - Git + Goodview workflow helper
 set -euo pipefail
 
-VERSION="1.0.1"
+VERSION="1.0.2"
 DEFAULT_SOFTWARE_ID="good-cli"
+DEFAULT_AI_PROVIDER="ollama"
+DEFAULT_CLAUDE_MODEL="claude-sonnet-4-20250514"
 GOOD_CLI_GITHUB_RAW="https://raw.githubusercontent.com/goodview-fr/good/main/good"
 
 COMMAND="${1:-help}"
 
-_ai() {
-    echo "$@" | ollama run qwen3:8b --nowordwrap 2>/dev/null \
-        | sed '/^Thinking\.\.\./,/^\.\.\.done thinking\./d' \
+_good_global_settings_dir() {
+    echo "${HOME}/.good"
+}
+
+_good_global_settings_file() {
+    echo "$(_good_global_settings_dir)/settings.json"
+}
+
+_good_load_global_setting() {
+    local key="$1" default="${2:-}"
+    local settings_file
+    settings_file="$(_good_global_settings_file)"
+    if [ ! -f "$settings_file" ]; then
+        echo "$default"
+        return
+    fi
+    python3 - "$settings_file" "$key" "$default" <<'PY'
+import json, sys
+path, key, default = sys.argv[1:4]
+try:
+    with open(path) as f:
+        data = json.load(f)
+except (OSError, json.JSONDecodeError):
+    print(default)
+    raise SystemExit(0)
+value = data.get(key)
+print(value if value not in (None, "") else default)
+PY
+}
+
+_good_save_global_settings() {
+    local key="$1" value="$2"
+    local settings_dir settings_file
+    settings_dir="$(_good_global_settings_dir)"
+    settings_file="$(_good_global_settings_file)"
+    mkdir -p "$settings_dir"
+    python3 - "$settings_file" "$key" "$value" <<'PY'
+import json, os, sys
+
+path, key, value = sys.argv[1:4]
+data = {}
+if os.path.isfile(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        data = {}
+data.setdefault("version", 1)
+data[key] = value
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+os.chmod(path, 0o600)
+PY
+}
+
+_good_ai_provider() {
+    if [ -n "${GOOD_AI_PROVIDER:-}" ]; then
+        echo "${GOOD_AI_PROVIDER,,}"
+        return
+    fi
+    _good_load_global_setting ai_provider "$DEFAULT_AI_PROVIDER"
+}
+
+_good_claude_model() {
+    if [ -n "${GOOD_CLAUDE_MODEL:-}" ]; then
+        echo "$GOOD_CLAUDE_MODEL"
+        return
+    fi
+    _good_load_global_setting claude_model "$DEFAULT_CLAUDE_MODEL"
+}
+
+_good_anthropic_api_key() {
+    if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+        echo "$ANTHROPIC_API_KEY"
+        return
+    fi
+    _good_load_global_setting anthropic_api_key ""
+}
+
+_good_ai_clean_output() {
+    sed '/^Thinking\.\.\./,/^\.\.\.done thinking\./d' \
         | sed 's/^`\+//;s/`\+$//;/^```/d' \
         | sed '/^[[:space:]]*$/d'
+}
+
+_ai_via_ollama() {
+    echo "$@" | ollama run qwen3:8b --nowordwrap 2>/dev/null | _good_ai_clean_output
+}
+
+_ai_via_claude() {
+    local prompt="$*"
+    local api_key model tmp payload http_code body text err
+    _good_require_curl
+    api_key="$(_good_anthropic_api_key)"
+    if [ -z "$api_key" ]; then
+        echo "Erreur: ANTHROPIC_API_KEY manquante." >&2
+        echo "Exporte la variable ou enregistre-la : good settings claude-key" >&2
+        return 1
+    fi
+    model="$(_good_claude_model)"
+    tmp="$(mktemp)"
+    payload="$(python3 - "$model" "$prompt" <<'PY'
+import json, sys
+model, prompt = sys.argv[1:3]
+print(json.dumps({
+    "model": model,
+    "max_tokens": 8192,
+    "messages": [{"role": "user", "content": prompt}],
+}, ensure_ascii=False))
+PY
+)"
+    http_code="$(curl -sS -o "$tmp" -w "%{http_code}" \
+        -X POST "https://api.anthropic.com/v1/messages" \
+        -H "x-api-key: ${api_key}" \
+        -H "anthropic-version: 2023-06-01" \
+        -H "content-type: application/json" \
+        -d "$payload")"
+    body="$(cat "$tmp")"
+    rm -f "$tmp"
+    if [ "${http_code:0:1}" != "2" ]; then
+        err="$(python3 -c 'import json,sys
+try:
+    d=json.loads(sys.argv[1])
+    err=d.get("error") or {}
+    print(err.get("message") or json.dumps(d, ensure_ascii=False))
+except Exception:
+    print(sys.argv[1][:200])' "$body" 2>/dev/null || echo "$body")"
+        echo "Erreur Claude (HTTP ${http_code}): ${err}" >&2
+        return 1
+    fi
+    text="$(python3 -c 'import json,sys
+data=json.loads(sys.argv[1])
+parts=[]
+for block in data.get("content") or []:
+    if isinstance(block, dict) and block.get("type")=="text":
+        parts.append(block.get("text") or "")
+print("".join(parts))' "$body" 2>/dev/null || true)"
+    if [ -z "$text" ]; then
+        echo "Erreur: réponse Claude vide." >&2
+        return 1
+    fi
+    printf '%s\n' "$text" | _good_ai_clean_output
+}
+
+_ai() {
+    case "$(_good_ai_provider)" in
+        claude) _ai_via_claude "$@" ;;
+        *)      _ai_via_ollama "$@" ;;
+    esac
 }
 
 _repo_name() {
@@ -647,6 +794,7 @@ cmd_commit() {
     fi
     DIFF=$(git diff --cached --stat && printf '\n---\n' && git diff --cached)
     echo "Génération du message de commit..."
+    _ai_check_provider
     MSG=$(_generate_commit_msg "$DIFF")
     if [ -z "$MSG" ]; then
         echo "Impossible de générer un message automatique."
@@ -752,6 +900,7 @@ cmd_resolve() {
     echo "Fichiers en conflit:"
     echo "$CONFLICTS"
     _print_sep
+    _ai_check_provider
     FAILED=()
     for FILE in $CONFLICTS; do
         echo "Résolution IA: $FILE"
@@ -941,15 +1090,35 @@ if project.get("prod_url"):
 PY
 }
 
-_ai_check_ollama() {
-    if ! command -v ollama >/dev/null 2>&1; then
-        echo "Erreur: Ollama n'est pas installé."
-        exit 1
-    fi
-    if ! ollama list >/dev/null 2>&1; then
-        echo "Erreur: Ollama ne répond pas. Lance 'ollama serve'."
-        exit 1
-    fi
+_ai_check_provider() {
+    case "$(_good_ai_provider)" in
+        claude)
+            if [ -z "$(_good_anthropic_api_key)" ]; then
+                echo "Erreur: ANTHROPIC_API_KEY manquante pour Claude."
+                echo "Exporte la variable ou lance : good settings claude-key"
+                exit 1
+            fi
+            _good_require_curl
+            ;;
+        *)
+            if ! command -v ollama >/dev/null 2>&1; then
+                echo "Erreur: Ollama n'est pas installé."
+                echo "Installe Ollama ou bascule sur Claude : good settings claude"
+                exit 1
+            fi
+            if ! ollama list >/dev/null 2>&1; then
+                echo "Erreur: Ollama ne répond pas. Lance 'ollama serve'."
+                exit 1
+            fi
+            ;;
+    esac
+}
+
+_ai_provider_label() {
+    case "$(_good_ai_provider)" in
+        claude) echo "Claude ($(_good_claude_model))" ;;
+        *)      echo "Ollama (qwen3:8b)" ;;
+    esac
 }
 
 _ai_gather_context() {
@@ -1585,7 +1754,7 @@ _ai_handle_diagnose() {
 
 _ai_handle_edit() {
     local instruction="$1"
-    _ai_check_ollama
+    _ai_check_provider
 
     local root context raw_response payload
     root="$(_good_root)"
@@ -1594,7 +1763,14 @@ _ai_handle_edit() {
     context="$(_ai_gather_context "$instruction")"
     raw_response="$(_ai_request_task "$instruction" "$context" || true)"
     if [ -z "$raw_response" ]; then
-        echo "Erreur: l'IA n'a pas répondu. Vérifie qu'Ollama tourne avec qwen3:8b."
+        case "$(_good_ai_provider)" in
+            claude)
+                echo "Erreur: l'IA n'a pas répondu. Vérifie ANTHROPIC_API_KEY et la connexion réseau."
+                ;;
+            *)
+                echo "Erreur: l'IA n'a pas répondu. Vérifie qu'Ollama tourne avec qwen3:8b."
+                ;;
+        esac
         exit 1
     fi
 
@@ -1984,10 +2160,92 @@ cmd_update() {
     esac
 }
 
+cmd_settings() {
+    _good_require_python
+
+    local sub="${1:-show}"
+    shift || true
+
+    case "$sub" in
+        ollama)
+            _good_save_global_settings ai_provider ollama
+            echo "✓ Fournisseur IA : Ollama (qwen3:8b, local)"
+            ;;
+        claude)
+            _good_save_global_settings ai_provider claude
+            if [ -z "$(_good_anthropic_api_key)" ]; then
+                echo ""
+                echo "Clé API Anthropic requise pour Claude."
+                echo "  export ANTHROPIC_API_KEY=sk-ant-..."
+                echo "  ou : good settings claude-key"
+                exit 1
+            fi
+            echo "✓ Fournisseur IA : Claude ($(_good_claude_model))"
+            ;;
+        claude-key|api-key)
+            local key="${1:-}"
+            if [ -z "$key" ]; then
+                if [ ! -t 0 ]; then
+                    echo "Usage: good settings claude-key <clé>"
+                    echo "       export ANTHROPIC_API_KEY=... puis good settings claude"
+                    exit 1
+                fi
+                read -rsp "Clé API Anthropic (ANTHROPIC_API_KEY): " key
+                echo ""
+            fi
+            if [ -z "$key" ]; then
+                echo "Erreur: clé vide."
+                exit 1
+            fi
+            _good_save_global_settings anthropic_api_key "$key"
+            echo "✓ Clé API enregistrée dans $(_good_global_settings_file) (permissions 600)"
+            ;;
+        show|-h|--help|help|"")
+            echo "Paramètres good (global)"
+            echo "────────────────────────"
+            echo "Fichier   : $(_good_global_settings_file)"
+            echo "IA        : $(_ai_provider_label)"
+            case "$(_good_ai_provider)" in
+                claude)
+                    if [ -n "$(_good_anthropic_api_key)" ]; then
+                        if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+                            echo "Clé API   : ANTHROPIC_API_KEY (variable d'environnement)"
+                        else
+                            echo "Clé API   : enregistrée dans settings.json"
+                        fi
+                    else
+                        echo "Clé API   : non configurée"
+                    fi
+                    echo "Modèle    : $(_good_claude_model)"
+                    ;;
+                *)
+                    echo "Modèle    : qwen3:8b (Ollama local)"
+                    ;;
+            esac
+            echo ""
+            echo "Usage:"
+            echo "  good settings              Affiche les paramètres"
+            echo "  good settings ollama       IA locale via Ollama (défaut)"
+            echo "  good settings claude       IA cloud via Anthropic Claude"
+            echo "  good settings claude-key   Enregistre ANTHROPIC_API_KEY"
+            echo ""
+            echo "Variables d'environnement :"
+            echo "  GOOD_AI_PROVIDER       ollama | claude"
+            echo "  ANTHROPIC_API_KEY      clé API Anthropic"
+            echo "  GOOD_CLAUDE_MODEL      modèle Claude (défaut: $DEFAULT_CLAUDE_MODEL)"
+            ;;
+        *)
+            echo "Option inconnue: $sub" >&2
+            echo "Usage: good settings [ollama|claude|claude-key|show]" >&2
+            exit 1
+            ;;
+    esac
+}
+
 cmd_log()    { _check_git; git log --oneline --graph --decorate -20; }
 cmd_status() { _check_git; git status -s; _print_sep; git log --oneline -5; }
 cmd_help() {
-    echo "good v${VERSION} — Git + Goodview (IA locale via Ollama)"
+    echo "good v${VERSION} — Git + Goodview (IA : $(_ai_provider_label))"
     echo ""
     cat <<'EOF'
 
@@ -1999,15 +2257,19 @@ cmd_help() {
                Syntaxe « # message » : good '#' 'lance le projet'
   i, init      Initialise git + lie le dépôt à un projet Goodview (OAuth)
   info         Affiche la liaison Goodview du dépôt local
+  settings     Choisir le fournisseur IA (ollama | claude)
   update       Met à jour good CLI (+ contexte Goodview si lié)
                Options : --force, --deps (composer/npm install)
   l, log       Log git graphique (20 derniers commits)
   st, status   Status court + derniers commits
 
 Variables d'environnement :
-  GOODVIEW_URL     URL du site (défaut: https://www.goodview.fr)
-  GOODVIEW_API     URL de l'API (défaut: GOODVIEW_URL/api)
-  GOOD_SOFTWARE_ID ID logiciel pour good update (défaut: good-cli)
+  GOODVIEW_URL       URL du site (défaut: https://www.goodview.fr)
+  GOODVIEW_API       URL de l'API (défaut: GOODVIEW_URL/api)
+  GOOD_SOFTWARE_ID   ID logiciel pour good update (défaut: good-cli)
+  GOOD_AI_PROVIDER   Fournisseur IA : ollama (défaut) ou claude
+  ANTHROPIC_API_KEY  Clé API Anthropic (requis pour claude)
+  GOOD_CLAUDE_MODEL  Modèle Claude (défaut: claude-sonnet-4-20250514)
 EOF
 }
 
@@ -2026,6 +2288,10 @@ case "$COMMAND" in
         ;;
     i|init)     cmd_init    ;;
     info)       cmd_info    ;;
+    settings|config)
+        shift
+        cmd_settings "$@"
+        ;;
     update|u)
         shift
         cmd_update "$@"

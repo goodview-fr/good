@@ -2,7 +2,7 @@
 
 CLI shell qui automatise le workflow **Git + Goodview** : commits assistés par IA, push/sync GitHub, résolution de conflits, liaison OAuth avec un projet client, et tâches en langage naturel (démarrage, diagnostic, modifications de fichiers).
 
-**Version actuelle :** `1.0.1` — vérifiable avec `good --version`.
+**Version actuelle :** `1.0.2` — vérifiable avec `good --version`.
 
 ---
 
@@ -11,7 +11,8 @@ CLI shell qui automatise le workflow **Git + Goodview** : commits assistés par 
 | Outil | Rôle |
 |---|---|
 | **Git** | Dépôts locaux, commits, rebase |
-| **Ollama** + modèle **qwen3:8b** (~5,2 Go) | Génération de messages de commit, résolution de conflits, modifications IA |
+| **Ollama** + modèle **qwen3:8b** (~5,2 Go) | IA locale (défaut) — commits, conflits, modifications |
+| **Anthropic API** (optionnel) | IA cloud via Claude — `good settings claude` + `ANTHROPIC_API_KEY` |
 | **GitHub CLI** (`gh`) | Création de dépôts, push, authentification GitHub |
 | **python3** | `good init`, `good info`, `good update`, `good ai` |
 | **curl** | OAuth Goodview, téléchargement des mises à jour |
@@ -100,6 +101,7 @@ good help
 | `good init` | `git init` + liaison OAuth à un projet Goodview |
 | `good info` | Affiche la liaison Goodview du dépôt courant |
 | `good update` | Met à jour le CLI (manifest Goodview ou repli GitHub) |
+| `good settings` | Choisir le fournisseur IA (`ollama` ou `claude`) |
 | `good ai <instruction>` | Tâche en langage naturel (démarrage, diagnostic, edits) |
 | `good l` | Historique git graphique (20 commits) |
 | `good st` | Status court + 5 derniers commits |
@@ -118,6 +120,14 @@ good p             # push sur GitHub
 ```bash
 export GOODVIEW_URL=http://localhost:8000
 good init
+```
+
+**IA cloud (Claude) :**
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+good settings claude
+good settings              # vérifier la config
 ```
 
 ---

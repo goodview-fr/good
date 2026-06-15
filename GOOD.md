@@ -1,10 +1,11 @@
 # good — Aide-mémoire
 
-**Version actuelle : 1.0.1** — `good --version` ou l'en-tête de `good help`.
+**Version actuelle : 1.0.2** — `good --version` ou l'en-tête de `good help`.
 
 `good` est un outil en ligne de commande qui automatise les opérations git courantes
-en utilisant l'IA locale (qwen3:8b via Ollama) pour générer les messages de commit
-et résoudre les conflits. Disponible dans tous tes projets.
+en utilisant l'IA pour générer les messages de commit et résoudre les conflits.
+Par défaut : **qwen3:8b via Ollama** (local). Alternative : **Claude** via l'API Anthropic.
+Disponible dans tous tes projets.
 
 ---
 
@@ -247,6 +248,38 @@ Sécurité :
 
 ---
 
+### `good settings` — Choisir le fournisseur IA
+
+**Quand l'utiliser :** pour basculer entre l'IA locale (Ollama) et Claude (API Anthropic).
+
+Les paramètres sont **globaux** (tous les projets) : `~/.good/settings.json` (permissions 600).
+
+```bash
+good settings              # affiche le fournisseur actuel
+good settings ollama       # Ollama + qwen3:8b (défaut, gratuit, local)
+good settings claude       # Claude via Anthropic (ANTHROPIC_API_KEY requise)
+good settings claude-key   # enregistre la clé API dans settings.json
+```
+
+**Claude** — clé API :
+- Variable d'environnement `ANTHROPIC_API_KEY` (prioritaire)
+- Ou `good settings claude-key` (stockée dans `~/.good/settings.json`)
+
+Modèle par défaut : `claude-sonnet-4-20250514` (surchargeable via `GOOD_CLAUDE_MODEL`).
+
+**Ollama** — prérequis : Ollama installé, modèle `qwen3:8b` téléchargé (`ollama pull qwen3:8b`).
+
+Variables :
+| Variable | Valeurs | Défaut |
+|---|---|---|
+| `GOOD_AI_PROVIDER` | `ollama`, `claude` | `ollama` |
+| `ANTHROPIC_API_KEY` | clé Anthropic | — |
+| `GOOD_CLAUDE_MODEL` | identifiant modèle | `claude-sonnet-4-20250514` |
+
+Les commandes `good c`, `good r` et `good ai` (modifications) utilisent le fournisseur configuré.
+
+---
+
 ### `good l` — Voir l'historique
 
 Affiche les 20 derniers commits sous forme graphique, avec les branches et tags.
@@ -273,6 +306,7 @@ Affiche en deux blocs :
 Nouveau projet          →  good init (+ good p pour GitHub)
 Voir liaison Goodview   →  good info
 Mettre à jour           →  good update
+Configurer l'IA         →  good settings [ollama|claude]
 Sauvegarder             →  good c
 Envoyer sur GitHub      →  good p
 Récupérer + envoyer     →  good s
@@ -286,6 +320,7 @@ Voir l'état             →  good st
 
 ## Sous le capot
 
-- Modèle IA : **qwen3:8b** via Ollama (local, gratuit, aucun crédit consommé)
+- Fournisseur IA configurable : **Ollama** (qwen3:8b, local) ou **Claude** (API Anthropic)
+- Paramètres globaux : `~/.good/settings.json`
 - Script installé dans : `~/.local/bin/good`
 - Aliases git disponibles : `git aic`, `git aip`, `git ais`, `git air`
