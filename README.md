@@ -2,7 +2,7 @@
 
 CLI shell qui automatise le workflow **Git + Goodview** : commits assistés par IA, push/sync GitHub, résolution de conflits, liaison OAuth avec un projet client, et tâches en langage naturel (démarrage, diagnostic, modifications de fichiers).
 
-**Version actuelle :** `1.0.3` — vérifiable avec `good --version`.
+**Version actuelle :** `1.1.0` — vérifiable avec `good --version`.
 
 ---
 
@@ -94,14 +94,23 @@ good help
 
 | Commande | Description |
 |---|---|
-| `good c` | Stage tout, propose un message de commit (IA), commit |
+| `good c` | Stage tout, propose un message de commit (IA), commit (`--staged`, `-i`) |
 | `good p` | Commit si besoin, crée le repo GitHub si absent, push |
 | `good s` | Commit + fetch + rebase + push |
 | `good r` | Résout les conflits git avec l'IA |
+| `good pr` | Crée une PR GitHub (titre + description IA) |
+| `good test` | Lance les tests du projet |
+| `good check` | Lint + analyse (`--test`, `--fix`) |
+| `good dev` | Dev local : `start`, `stop`, `status`, `logs` |
+| `good stop` | Alias de `good dev stop` |
 | `good init` | `git init` + liaison OAuth à un projet Goodview |
+| `good auth` | Renouvelle le token Goodview |
+| `good unlink` | Supprime la liaison `.good/` |
 | `good info` | Affiche la liaison Goodview du dépôt courant |
+| `good open` | Ouvre admin, dev, prod ou GitHub dans le navigateur |
+| `good todos` | Todos du projet (`list`, `add`, `done`) |
 | `good update` | Met à jour le CLI (manifest Goodview ou repli GitHub) |
-| `good settings` | Choisir le fournisseur IA (`ollama` ou `claude`) |
+| `good settings` | Choisir le fournisseur IA (`ollama [modèle]` ou `claude`) |
 | `good ai <instruction>` | Tâche en langage naturel (démarrage, diagnostic, edits) |
 | `good l` | Historique git graphique (20 commits) |
 | `good st` | Status court + 5 derniers commits |

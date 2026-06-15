@@ -1,6 +1,6 @@
 # good — Aide-mémoire
 
-**Version actuelle : 1.0.3** — `good --version` ou l'en-tête de `good help`.
+**Version actuelle : 1.1.0** — `good --version` ou l'en-tête de `good help`.
 
 `good` est un outil en ligne de commande qui automatise les opérations git courantes
 en utilisant l'IA pour générer les messages de commit et résoudre les conflits.
@@ -35,6 +35,12 @@ fix(api): handle null response on timeout
 refactor(db): simplify query builder
 ```
 
+Options :
+```bash
+good c --staged    # committer uniquement le staging actuel
+good c -i          # mode interactif (git add -p)
+```
+
 ---
 
 ### `good p` — Pousser vers GitHub
@@ -65,6 +71,49 @@ Ce que ça fait :
 4. Push le tout
 
 Si des conflits apparaissent pendant le rebase, le script s'arrête et te dit de lancer `good r`.
+
+---
+
+### `good pr` — Créer une pull request
+
+**Quand l'utiliser :** tu as poussé des commits sur une branche et tu veux ouvrir une PR GitHub.
+
+Ce que ça fait :
+1. Committe les changements locaux si besoin
+2. Push sur origin (si pas déjà fait)
+3. Génère titre + description via l'IA à partir du diff depuis `main`
+4. Crée la PR avec `gh pr create` (confirmation obligatoire)
+
+```bash
+good pr
+good pr --base develop
+```
+
+---
+
+### `good test` / `good check` — Tests et qualité
+
+**Quand l'utiliser :** avant un push ou une PR, pour valider le projet.
+
+| Commande | Action |
+|---|---|
+| `good test` | `composer test` ou `npm run test` selon le projet |
+| `good check` | Lint + analyse (`composer lint`, `composer analyse`, `npm run typecheck`…) |
+| `good check --test` | Check + tests |
+| `good check --fix` | Applique `lint:fix` si disponible |
+
+---
+
+### `good dev` / `good stop` — Serveur de dev local
+
+**Quand l'utiliser :** démarrer ou arrêter le stack local sans passer par `good ai`.
+
+```bash
+good dev start     # composer dev ou npm run dev (arrière-plan, logs .good/dev.log)
+good dev stop      # alias : good stop
+good dev status    # PID + diagnostic ports (8000, 5173…)
+good dev logs      # tail des logs (-f pour suivre)
+```
 
 ---
 
@@ -122,6 +171,46 @@ En production, l'URL par défaut est `https://www.goodview.fr` (`goodview.fr` re
 Affiche le client, le projet, les URLs d'environnement et le dépôt liés au dossier courant.
 
 Si le dépôt n'est pas lié, invite à lancer `good init`.
+
+---
+
+### `good auth` — Renouveler le token Goodview
+
+**Quand l'utiliser :** `good info` ou `good todos` échoue avec un token expiré.
+
+Relance OAuth et met à jour le token dans `.good/config.json` **sans** changer le projet lié.
+
+---
+
+### `good unlink` — Supprimer la liaison
+
+Supprime le dossier `.good/` (config, logs dev, PID). Demande confirmation.
+
+---
+
+### `good open` — Ouvrir dans le navigateur
+
+**Prérequis :** dépôt lié via `good init`.
+
+```bash
+good open          # fiche admin du projet (défaut)
+good open dev      # URL dev du projet
+good open prod     # URL prod
+good open github   # dépôt GitHub
+good open site     # accueil Goodview
+```
+
+---
+
+### `good todos` — Todos du projet lié
+
+Synchronise avec l'API admin Goodview (`/v1/admin/projects/{id}/todos`).
+
+```bash
+good todos              # liste (en attente + terminés)
+good todos add "…"      # crée un todo
+good todos done 42      # bascule terminé / en attente
+```
 
 ---
 
@@ -257,6 +346,7 @@ Les paramètres sont **globaux** (tous les projets) : `~/.good/settings.json` (p
 ```bash
 good settings              # affiche le fournisseur actuel
 good settings ollama       # Ollama + qwen3:8b (défaut, gratuit, local)
+good settings ollama llama3.2   # autre modèle Ollama
 good settings claude       # Claude via la commande claude (Claude Code CLI)
 ```
 
@@ -264,15 +354,16 @@ good settings claude       # Claude via la commande claude (Claude Code CLI)
 
 Modèle optionnel : surcharge via `GOOD_CLAUDE_MODEL` (ex. `sonnet`) — sinon le modèle par défaut du CLI s'applique.
 
-**Ollama** — prérequis : Ollama installé, modèle `qwen3:8b` téléchargé (`ollama pull qwen3:8b`).
+**Ollama** — prérequis : Ollama installé, modèle par défaut `qwen3:8b` (`ollama pull qwen3:8b`).
 
 Variables :
 | Variable | Valeurs | Défaut |
 |---|---|---|
 | `GOOD_AI_PROVIDER` | `ollama`, `claude` | `ollama` |
+| `GOOD_OLLAMA_MODEL` | nom modèle Ollama | `qwen3:8b` |
 | `GOOD_CLAUDE_MODEL` | alias ou nom de modèle CLI | — (défaut du CLI) |
 
-Les commandes `good c`, `good r` et `good ai` (modifications) utilisent le fournisseur configuré.
+Les commandes `good c`, `good r`, `good pr` et `good ai` (modifications) utilisent le fournisseur configuré.
 
 ---
 
@@ -301,12 +392,19 @@ Affiche en deux blocs :
 ```
 Nouveau projet          →  good init (+ good p pour GitHub)
 Voir liaison Goodview   →  good info
+Renouveler token        →  good auth
+Supprimer liaison       →  good unlink
 Mettre à jour           →  good update
 Configurer l'IA         →  good settings [ollama|claude]
-Sauvegarder             →  good c
+Dev local               →  good dev start | good stop
+Tests / qualité         →  good test | good check
+Sauvegarder             →  good c [--staged|-i]
 Envoyer sur GitHub      →  good p
+Pull request            →  good pr
 Récupérer + envoyer     →  good s
 Conflit à résoudre      →  good r
+Todos projet            →  good todos
+Ouvrir admin/dev/prod   →  good open
 Tâche IA (action)      →  good ai <instruction>
 Voir l'historique       →  good l
 Voir l'état             →  good st
