@@ -3,6 +3,7 @@
 set -euo pipefail
 
 VERSION="1.0.1"
+DEFAULT_SOFTWARE_ID="good-cli"
 GOOD_CLI_GITHUB_RAW="https://raw.githubusercontent.com/goodview-fr/good/main/good"
 
 COMMAND="${1:-help}"
@@ -183,10 +184,16 @@ _good_save_config() {
     python3 - "$config_file" "$token" "$project_id" "$site_base" "$api_base" "$(_good_root)" <<'PY'
 import json, sys, datetime, os
 path, token, project_id, site_base, api_base, local_path = sys.argv[1:7]
+software_id = DEFAULT_SOFTWARE_ID = "good-cli"
+if os.path.isfile(path):
+    with open(path) as f:
+        existing = json.load(f)
+    software_id = existing.get("software_id") or software_id
 data = {
     "version": 1,
     "site_base": site_base,
     "api_base": api_base,
+    "software_id": software_id,
     "token": token,
     "project_id": int(project_id),
     "local_path": local_path,
@@ -208,6 +215,22 @@ with open(sys.argv[1]) as f:
     data = json.load(f)
 print(data.get(sys.argv[2], ""))
 PY
+}
+
+_good_software_id() {
+    if [ -n "${GOOD_SOFTWARE_ID:-}" ]; then
+        echo "$GOOD_SOFTWARE_ID"
+        return
+    fi
+    if [ -f "$(_good_config_file)" ]; then
+        local from_config
+        from_config="$(_good_load_config_value software_id)"
+        if [ -n "$from_config" ]; then
+            echo "$from_config"
+            return
+        fi
+    fi
+    echo "$DEFAULT_SOFTWARE_ID"
 }
 
 _good_oauth_token() {
@@ -428,6 +451,22 @@ _good_api_request() {
         err_msg="$(_good_format_http_error "$http_code" "$response")"
         python3 -c 'import json,sys; print(json.dumps({"error": sys.argv[1], "status": int(sys.argv[2])}, ensure_ascii=False))' "$err_msg" "$http_code"
         return
+    fi
+    echo "$response"
+}
+
+_good_public_api_request() {
+    local method="$1" path="$2"
+    local api_base tmp http_code response
+    api_base="$(_good_api_base)"
+    tmp="$(mktemp)"
+    http_code="$(curl -sS -o "$tmp" -w "%{http_code}" -X "$method" \
+        -H "Accept: application/json" \
+        "${api_base}${path}")"
+    response="$(cat "$tmp")"
+    rm -f "$tmp"
+    if [ "${http_code:0:1}" != "2" ]; then
+        return 1
     fi
     echo "$response"
 }
@@ -873,6 +912,7 @@ print(f"Client    : {(project.get('client') or {}).get('name') or '—'}")
 print(f"Projet    : {project['name']} ({project.get('status_label') or project.get('status')})")
 print(f"Type      : {project.get('type_label') or project.get('type')}")
 print(f"Chemin    : {local.get('local_path') or '—'}")
+print(f"Logiciel  : {local.get('software_id') or 'good-cli'}")
 print(f"Lié le    : {local.get('linked_at') or '—'}")
 print(f"Goodview  : {local.get('site_base') or '—'}/admin/projects/{project['id']}/edit")
 
@@ -1700,22 +1740,32 @@ _good_remote_script_version() {
 }
 
 _good_fetch_version_manifest() {
-    local token="${1:-}" manifest remote_version
-    if [ -n "$token" ]; then
-        manifest="$(_good_api_request GET "/v1/admin/good-cli/version" "$token")"
-        if python3 - "$manifest" <<'PY' >/dev/null 2>&1
+    local software_id manifest remote_version github_raw
+    software_id="$(_good_software_id)"
+    manifest="$(_good_public_api_request GET "/v1/software/${software_id}/manifest?platform=linux" || true)"
+    if [ -n "$manifest" ] && python3 - "$manifest" <<'PY' >/dev/null 2>&1
 import json, sys
-data = json.loads(sys.argv[1])
-sys.exit(0 if data.get("data", {}).get("version") else 1)
+data = json.loads(sys.argv[1]).get("data", {})
+sys.exit(0 if data.get("version") and data.get("download_url") else 1)
 PY
-        then
-            echo "$manifest"
-            return 0
-        fi
-        echo "Attention: manifest Goodview indisponible, repli GitHub." >&2
+    then
+        python3 - "$manifest" <<'PY'
+import json, sys
+raw = json.loads(sys.argv[1])["data"]
+print(json.dumps({
+    "data": {
+        "version": raw["version"],
+        "download_url": raw["download_url"],
+        "github_repo": raw.get("github_repo") or "goodview-fr/good",
+    }
+}, ensure_ascii=False))
+PY
+        return 0
     fi
-    remote_version="$(_good_remote_script_version "$GOOD_CLI_GITHUB_RAW")"
-    python3 - "$remote_version" "$GOOD_CLI_GITHUB_RAW" <<'PY'
+    echo "Attention: manifest Goodview indisponible (ID: ${software_id}), repli GitHub." >&2
+    github_raw="${GOOD_CLI_GITHUB_RAW}"
+    remote_version="$(_good_remote_script_version "$github_raw")"
+    python3 - "$remote_version" "$github_raw" <<'PY'
 import json, sys
 print(json.dumps({
     "data": {
@@ -1750,14 +1800,16 @@ _good_install_cli() {
 }
 
 _good_update_cli() {
-    local force="${1:-0}" token="${2:-}" manifest remote_version download_url current cmp
+    local force="${1:-0}" manifest remote_version download_url current cmp software_id
     _GOOD_CLI_UPDATE_STATUS=""
+    software_id="$(_good_software_id)"
     current="$(_good_installed_version)"
-    manifest="$(_good_fetch_version_manifest "$token")"
+    manifest="$(_good_fetch_version_manifest)"
     remote_version="$(_good_normalize_version "$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["data"]["version"])' "$manifest")")"
     download_url="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["data"]["download_url"])' "$manifest")"
 
     echo "CLI good : v${current} installé"
+    echo "ID logiciel : ${software_id}"
     echo "Disponible : v${remote_version}"
 
     cmp="$(_good_compare_versions "$current" "$remote_version")"
@@ -1899,7 +1951,7 @@ cmd_update() {
 
     echo "=== Mise à jour good ==="
     echo ""
-    _good_update_cli "$force" "$token"
+    _good_update_cli "$force"
 
     if [ "$linked" -eq 1 ]; then
         echo ""
@@ -1918,7 +1970,7 @@ cmd_update() {
     echo ""
     case "${_GOOD_CLI_UPDATE_STATUS:-}" in
         local_newer)
-            echo "Rien à télécharger — publie v$(_good_installed_version) sur GitHub (goodview-fr/good) et GOOD_CLI_VERSION en prod pour les autres machines."
+            echo "Rien à télécharger — publie v$(_good_installed_version) sur GitHub (goodview-fr/good) et mets à jour la version dans l'admin Goodview (Logiciels → $(_good_software_id))."
             ;;
         already_current)
             echo "✓ Terminé (good v$(_good_installed_version) déjà à jour)."
@@ -1953,8 +2005,9 @@ cmd_help() {
   st, status   Status court + derniers commits
 
 Variables d'environnement :
-  GOODVIEW_URL  URL du site (défaut: https://www.goodview.fr)
-  GOODVIEW_API  URL de l'API (défaut: GOODVIEW_URL/api)
+  GOODVIEW_URL     URL du site (défaut: https://www.goodview.fr)
+  GOODVIEW_API     URL de l'API (défaut: GOODVIEW_URL/api)
+  GOOD_SOFTWARE_ID ID logiciel pour good update (défaut: good-cli)
 EOF
 }
 

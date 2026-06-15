@@ -96,7 +96,7 @@ Ce que ça fait :
 1. `git init` si le dossier n'est pas encore un dépôt git
 2. Ouvre le navigateur pour une connexion OAuth Goodview (compte admin requis)
 3. Te propose de choisir le projet client à lier (auto-détection si le remote GitHub correspond)
-4. Enregistre la liaison dans `.good/config.json` (gitignored, permissions 600)
+4. Enregistre la liaison dans `.good/config.json` (gitignored, permissions 600) avec `software_id: good-cli`
 5. Attache le dépôt GitHub au projet Goodview si le remote `origin` est reconnu
 
 ```bash
@@ -129,23 +129,25 @@ Si le dépôt n'est pas lié, invite à lancer `good init`.
 **Quand l'utiliser :** pour récupérer la dernière version du CLI et rafraîchir les métadonnées du projet lié (URLs dev/prod, nom client, etc.).
 
 Ce que ça fait :
-1. Compare la version locale du CLI avec le manifest Goodview (ou GitHub en repli)
+1. Compare la version locale du CLI avec le manifest Goodview (`GET /api/v1/software/{software_id}/manifest`) ou GitHub en repli
 2. Télécharge et installe la dernière version dans `~/.local/bin/good`
 3. Si `.good/config.json` existe : rafraîchit le cache projet depuis l'API Goodview
 4. Option `--deps` : lance `composer install` et/ou `npm install` si les fichiers sont présents
+
+**ID logiciel** : par défaut `good-cli`, stocké dans `.good/config.json` (`software_id`) ou via `GOOD_SOFTWARE_ID`.
 
 ```bash
 good update              # CLI + contexte Goodview
 good update --deps       # + dépendances du projet
 good update --force      # réinstalle le CLI même si déjà à jour
 good --version           # affiche la version installée (ex. good v1.0.1)
+good info                # affiche aussi l'ID logiciel
 ```
 
 Sans projet lié : met à jour uniquement le CLI (repli GitHub `goodview-fr/good`).
 
-Test local sans push GitHub : site Laravel avec `GOOD_CLI_VERSION=1.0.1` et
-`GOOD_CLI_DOWNLOAD_URL=file:///chemin/vers/good/good`, dépôt lié via `good init`,
-puis simuler une version obsolète avec
+Test local : admin Goodview → Logiciels → `good-cli` → modifier version/URL,
+dépôt lié via `good init`, puis simuler une version obsolète avec
 `sed -i 's/VERSION="1.0.1"/VERSION="1.0.0"/' ~/.local/bin/good` avant `good update`.
 
 #### Checklist release CLI
@@ -160,10 +162,13 @@ puis simuler une version obsolète avec
    ```bash
    curl -s https://raw.githubusercontent.com/goodview-fr/good/main/good | grep '^VERSION='
    ```
-4. **Mettre à jour goodview.fr** : `GOOD_CLI_VERSION=<même version>` dans `.env` prod (Clever Cloud).
-   Le défaut dans `config/good-cli.php` ne suffit pas si prod a une valeur explicite.
-5. **Déployer goodview.fr** pour exposer `GET /api/v1/admin/good-cli/version` avec la nouvelle version.
-6. **Mettre à jour `GOOD.md`** (en-tête « Version actuelle ») et `.env.example` du Site si besoin.
+4. **Mettre à jour le catalogue** : admin Goodview → Logiciels → `good-cli` → téléchargement Linux → version + URL.
+   L'ID logiciel à copier est `good-cli` (bouton « Copier l'ID logiciel »).
+5. **Vérifier l'API** :
+   ```bash
+   curl -s https://www.goodview.fr/api/v1/software/good-cli/manifest | jq .
+   ```
+6. **Mettre à jour `GOOD.md`** (en-tête « Version actuelle »).
 7. **Tester** sur une machine « propre » :
    ```bash
    sed -i 's/VERSION="[^"]*"/VERSION="0.0.0"/' ~/.local/bin/good
