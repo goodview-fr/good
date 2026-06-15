@@ -1,10 +1,10 @@
 # good — Aide-mémoire
 
-**Version actuelle : 1.0.2** — `good --version` ou l'en-tête de `good help`.
+**Version actuelle : 1.0.3** — `good --version` ou l'en-tête de `good help`.
 
 `good` est un outil en ligne de commande qui automatise les opérations git courantes
 en utilisant l'IA pour générer les messages de commit et résoudre les conflits.
-Par défaut : **qwen3:8b via Ollama** (local). Alternative : **Claude** via l'API Anthropic.
+Par défaut : **qwen3:8b via Ollama** (local). Alternative : **Claude** via la commande `claude` (Claude Code CLI).
 Disponible dans tous tes projets.
 
 ---
@@ -250,22 +250,19 @@ Sécurité :
 
 ### `good settings` — Choisir le fournisseur IA
 
-**Quand l'utiliser :** pour basculer entre l'IA locale (Ollama) et Claude (API Anthropic).
+**Quand l'utiliser :** pour basculer entre l'IA locale (Ollama) et Claude (CLI locale).
 
 Les paramètres sont **globaux** (tous les projets) : `~/.good/settings.json` (permissions 600).
 
 ```bash
 good settings              # affiche le fournisseur actuel
 good settings ollama       # Ollama + qwen3:8b (défaut, gratuit, local)
-good settings claude       # Claude via Anthropic (ANTHROPIC_API_KEY requise)
-good settings claude-key   # enregistre la clé API dans settings.json
+good settings claude       # Claude via la commande claude (Claude Code CLI)
 ```
 
-**Claude** — clé API :
-- Variable d'environnement `ANTHROPIC_API_KEY` (prioritaire)
-- Ou `good settings claude-key` (stockée dans `~/.good/settings.json`)
+**Claude** — prérequis : [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installé (`claude` dans le PATH). L'authentification est gérée par le CLI (pas de clé API à configurer dans `good`).
 
-Modèle par défaut : `claude-sonnet-4-20250514` (surchargeable via `GOOD_CLAUDE_MODEL`).
+Modèle optionnel : surcharge via `GOOD_CLAUDE_MODEL` (ex. `sonnet`) — sinon le modèle par défaut du CLI s'applique.
 
 **Ollama** — prérequis : Ollama installé, modèle `qwen3:8b` téléchargé (`ollama pull qwen3:8b`).
 
@@ -273,8 +270,7 @@ Variables :
 | Variable | Valeurs | Défaut |
 |---|---|---|
 | `GOOD_AI_PROVIDER` | `ollama`, `claude` | `ollama` |
-| `ANTHROPIC_API_KEY` | clé Anthropic | — |
-| `GOOD_CLAUDE_MODEL` | identifiant modèle | `claude-sonnet-4-20250514` |
+| `GOOD_CLAUDE_MODEL` | alias ou nom de modèle CLI | — (défaut du CLI) |
 
 Les commandes `good c`, `good r` et `good ai` (modifications) utilisent le fournisseur configuré.
 
@@ -320,7 +316,7 @@ Voir l'état             →  good st
 
 ## Sous le capot
 
-- Fournisseur IA configurable : **Ollama** (qwen3:8b, local) ou **Claude** (API Anthropic)
+- Fournisseur IA configurable : **Ollama** (qwen3:8b, local) ou **Claude** (commande `claude`, Claude Code CLI)
 - Paramètres globaux : `~/.good/settings.json`
 - Script installé dans : `~/.local/bin/good`
 - Aliases git disponibles : `git aic`, `git aip`, `git ais`, `git air`
