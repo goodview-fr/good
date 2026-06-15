@@ -2,6 +2,9 @@
 # good - Git + Goodview workflow helper
 set -euo pipefail
 
+VERSION="1.0.0"
+GOOD_CLI_GITHUB_RAW="https://raw.githubusercontent.com/goodview-fr/good/main/good"
+
 COMMAND="${1:-help}"
 
 _ai() {
@@ -1627,6 +1630,269 @@ cmd_ai() {
     esac
 }
 
+_good_install_target() {
+    echo "${HOME}/.local/bin/good"
+}
+
+_good_compare_versions() {
+    python3 - "$1" "$2" <<'PY'
+import sys
+
+def parts(v):
+    out = []
+    for piece in v.lstrip("v").split("."):
+        num = ""
+        for ch in piece:
+            if ch.isdigit():
+                num += ch
+            else:
+                break
+        out.append(int(num or 0))
+    return out
+
+a, b = parts(sys.argv[1]), parts(sys.argv[2])
+length = max(len(a), len(b))
+for i in range(length):
+    av = a[i] if i < len(a) else 0
+    bv = b[i] if i < len(b) else 0
+    if av < bv:
+        print("older")
+        break
+    if av > bv:
+        print("newer")
+        break
+else:
+    print("equal")
+PY
+}
+
+_good_remote_script_version() {
+    local url="$1" tmp version
+    tmp="$(mktemp)"
+    if ! curl -fsSL "$url" -o "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        echo "$VERSION"
+        return
+    fi
+    version="$(grep -E '^VERSION=' "$tmp" | head -1 | sed -E 's/^VERSION="([^"]+)".*/\1/')"
+    rm -f "$tmp"
+    echo "${version:-$VERSION}"
+}
+
+_good_fetch_version_manifest() {
+    local token="${1:-}" manifest remote_version
+    if [ -n "$token" ]; then
+        manifest="$(_good_api_request GET "/v1/admin/good-cli/version" "$token")"
+        if python3 - "$manifest" <<'PY' >/dev/null 2>&1
+import json, sys
+data = json.loads(sys.argv[1])
+sys.exit(0 if data.get("data", {}).get("version") else 1)
+PY
+        then
+            echo "$manifest"
+            return 0
+        fi
+        echo "Attention: manifest Goodview indisponible, repli GitHub." >&2
+    fi
+    remote_version="$(_good_remote_script_version "$GOOD_CLI_GITHUB_RAW")"
+    python3 - "$remote_version" "$GOOD_CLI_GITHUB_RAW" <<'PY'
+import json, sys
+print(json.dumps({
+    "data": {
+        "version": sys.argv[1],
+        "download_url": sys.argv[2],
+        "github_repo": "goodview-fr/good",
+    }
+}, ensure_ascii=False))
+PY
+}
+
+_good_install_cli() {
+    local url="$1" target tmp
+    target="$(_good_install_target)"
+    tmp="$(mktemp)"
+    if ! curl -fsSL "$url" -o "$tmp"; then
+        rm -f "$tmp"
+        echo "Erreur: téléchargement impossible ($url)." >&2
+        return 1
+    fi
+    if ! head -n 1 "$tmp" | grep -q '^#!/'; then
+        rm -f "$tmp"
+        echo "Erreur: le fichier téléchargé ne ressemble pas au script good." >&2
+        return 1
+    fi
+    mkdir -p "$(dirname "$target")"
+    install -m 755 "$tmp" "$target"
+    rm -f "$tmp"
+    echo "✓ good installé dans $target"
+}
+
+_good_update_cli() {
+    local force="${1:-0}" token="${2:-}" manifest remote_version download_url current cmp
+    current="$VERSION"
+    manifest="$(_good_fetch_version_manifest "$token")"
+    remote_version="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["data"]["version"])' "$manifest")"
+    download_url="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["data"]["download_url"])' "$manifest")"
+
+    echo "CLI good : v${current} installé"
+    echo "Disponible : v${remote_version}"
+
+    cmp="$(_good_compare_versions "$current" "$remote_version")"
+    if [ "$cmp" = "equal" ] && [ "$force" != "1" ]; then
+        echo "✓ good CLI déjà à jour."
+        return 0
+    fi
+    if [ "$cmp" = "newer" ] && [ "$force" != "1" ]; then
+        echo "Version locale plus récente que le manifest (dev ?). Utilise --force pour réinstaller."
+        return 0
+    fi
+
+    echo "Téléchargement de good v${remote_version}..."
+    _good_install_cli "$download_url"
+}
+
+_good_refresh_project_cache() {
+    local token="$1" project_id="$2"
+    local response
+    response="$(_good_api_request GET "/v1/admin/good-cli/projects/${project_id}" "$token")"
+    if ! python3 - "$response" <<'PY'
+import json, sys
+data = json.loads(sys.argv[1])
+sys.exit(0 if data.get("data", {}).get("id") else 1)
+PY
+    then
+        echo "Erreur: impossible de rafraîchir le projet (token expiré ?). Relance 'good init'." >&2
+        if python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d.get("message") or d.get("error") or d)' "$response" 2>/dev/null; then
+            :
+        else
+            _good_format_http_error "?" "$response" >&2
+        fi
+        return 1
+    fi
+
+    python3 - "$(_good_config_file)" "$response" <<'PY'
+import json, sys, datetime, os
+
+config_path, response_raw = sys.argv[1:3]
+project = json.loads(response_raw)["data"]
+with open(config_path) as f:
+    cfg = json.load(f)
+
+cfg["project_cache"] = {
+    "id": project["id"],
+    "name": project["name"],
+    "slug": project.get("slug"),
+    "type": project.get("type"),
+    "type_label": project.get("type_label"),
+    "status": project.get("status"),
+    "status_label": project.get("status_label"),
+    "github_url": project.get("github_url"),
+    "dev_url": project.get("dev_url"),
+    "dev_environment_name": project.get("dev_environment_name"),
+    "prod_url": project.get("prod_url"),
+    "prod_environment_name": project.get("prod_environment_name"),
+    "client_name": (project.get("client") or {}).get("name"),
+}
+cfg["updated_at"] = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
+
+with open(config_path, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+os.chmod(config_path, 0o600)
+PY
+
+    python3 - "$response" <<'PY'
+import json, sys
+project = json.loads(sys.argv[1])["data"]
+client = (project.get("client") or {}).get("name") or "—"
+print(f"✓ Contexte projet rafraîchi : {project['name']} ({client})")
+if project.get("dev_url"):
+    print(f"  Dev  : {project['dev_url']}")
+if project.get("prod_url"):
+    print(f"  Prod : {project['prod_url']}")
+PY
+}
+
+_good_install_project_deps() {
+    local root="$(_good_root)" ran=0
+    if [ -f "$root/composer.json" ] && command -v composer >/dev/null 2>&1; then
+        echo "Installation des dépendances PHP (composer install)..."
+        (cd "$root" && composer install --no-interaction)
+        echo "✓ composer install terminé"
+        ran=1
+    elif [ -f "$root/composer.json" ]; then
+        echo "composer.json présent mais composer absent — ignoré." >&2
+    fi
+    if [ -f "$root/package.json" ] && command -v npm >/dev/null 2>&1; then
+        echo "Installation des dépendances JS (npm install)..."
+        (cd "$root" && npm install)
+        echo "✓ npm install terminé"
+        ran=1
+    elif [ -f "$root/package.json" ]; then
+        echo "package.json présent mais npm absent — ignoré." >&2
+    fi
+    if [ "$ran" -eq 0 ]; then
+        echo "Aucune dépendance détectée (composer.json / package.json)."
+    fi
+}
+
+cmd_update() {
+    _good_require_python
+    _good_require_curl
+
+    local force=0 with_deps=0 arg token config_file project_id linked=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --force|-f) force=1 ;;
+            --deps) with_deps=1 ;;
+            -h|--help)
+                echo "Usage: good update [--force] [--deps]"
+                echo ""
+                echo "  --force   Réinstalle le CLI même si la version est identique"
+                echo "  --deps    Lance composer install / npm install si détectés"
+                exit 0
+                ;;
+            *)
+                echo "Option inconnue: $1" >&2
+                exit 1
+                ;;
+        esac
+        shift
+    done
+
+    config_file="$(_good_config_file)"
+    token=""
+    project_id=""
+    if [ -f "$config_file" ]; then
+        linked=1
+        token="$(_good_load_config_value token)"
+        project_id="$(_good_load_config_value project_id)"
+    else
+        echo "Pas de projet lié — mise à jour du CLI uniquement."
+    fi
+
+    echo "=== Mise à jour good ==="
+    echo ""
+    _good_update_cli "$force" "$token"
+
+    if [ "$linked" -eq 1 ]; then
+        echo ""
+        if [ -z "$token" ] || [ -z "$project_id" ]; then
+            echo "Configuration .good invalide — contexte projet ignoré. Relance 'good init'."
+        else
+            _good_refresh_project_cache "$token" "$project_id"
+        fi
+    fi
+
+    if [ "$with_deps" -eq 1 ]; then
+        echo ""
+        _good_install_project_deps
+    fi
+
+    echo ""
+    echo "✓ Mise à jour terminée."
+}
+
 cmd_log()    { _check_git; git log --oneline --graph --decorate -20; }
 cmd_status() { _check_git; git status -s; _print_sep; git log --oneline -5; }
 cmd_help() {
@@ -1641,6 +1907,8 @@ good - Git + Goodview (IA locale via Ollama)
                Syntaxe « # message » : good '#' 'lance le projet'
   i, init      Initialise git + lie le dépôt à un projet Goodview (OAuth)
   info         Affiche la liaison Goodview du dépôt local
+  update       Met à jour good CLI (+ contexte Goodview si lié)
+               Options : --force, --deps (composer/npm install)
   l, log       Log git graphique (20 derniers commits)
   st, status   Status court + derniers commits
 
@@ -1665,6 +1933,10 @@ case "$COMMAND" in
         ;;
     i|init)     cmd_init    ;;
     info)       cmd_info    ;;
+    update|u)
+        shift
+        cmd_update "$@"
+        ;;
     l|log)      cmd_log     ;;
     st|status)  cmd_status  ;;
     help|-h|--help) cmd_help ;;

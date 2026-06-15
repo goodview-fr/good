@@ -122,6 +122,26 @@ Si le dépôt n'est pas lié, invite à lancer `good init`.
 
 ---
 
+### `good update` — Mettre à jour good et le contexte Goodview
+
+**Quand l'utiliser :** pour récupérer la dernière version du CLI et rafraîchir les métadonnées du projet lié (URLs dev/prod, nom client, etc.).
+
+Ce que ça fait :
+1. Compare la version locale du CLI avec le manifest Goodview (ou GitHub en repli)
+2. Télécharge et installe la dernière version dans `~/.local/bin/good`
+3. Si `.good/config.json` existe : rafraîchit le cache projet depuis l'API Goodview
+4. Option `--deps` : lance `composer install` et/ou `npm install` si les fichiers sont présents
+
+```bash
+good update              # CLI + contexte Goodview
+good update --deps       # + dépendances du projet
+good update --force      # réinstalle le CLI même si déjà à jour
+```
+
+Sans projet lié : met à jour uniquement le CLI (repli GitHub `goodview-fr/good`).
+
+---
+
 ### `good ai` / `good do` — Tâche en langage naturel
 
 **Quand l'utiliser :** pour agir sur le projet sans tout faire à la main — lancer les services,
@@ -214,6 +234,7 @@ Affiche en deux blocs :
 ```
 Nouveau projet          →  good init (+ good p pour GitHub)
 Voir liaison Goodview   →  good info
+Mettre à jour           →  good update
 Sauvegarder             →  good c
 Envoyer sur GitHub      →  good p
 Récupérer + envoyer     →  good s
