@@ -1,5 +1,7 @@
 # good — Aide-mémoire
 
+**Version actuelle : 1.2.0** — `good --version`
+
 `good` est un outil en ligne de commande qui automatise les opérations git courantes
 en utilisant l'IA locale (qwen3:8b via Ollama) pour générer les messages de commit
 et résoudre les conflits. Disponible dans tous tes projets.
@@ -40,12 +42,14 @@ refactor(db): simplify query builder
 
 Ce que ça fait :
 1. Committe les changements en cours (si il y en a) — comme `good c`
-2. Si le projet n'a jamais été pushé : **crée le repo GitHub automatiquement** et demande public ou privé
-3. Push sur la branche courante
+2. Si tu refuses le commit, **le push est annulé** (pas de push partiel)
+3. Si le projet n'a jamais été pushé : **crée le repo GitHub automatiquement** et demande public ou privé
+4. Push sur la branche courante (y compris premier push si la branche distante n'existe pas encore)
 
 ```bash
 good p
-# → Repo privé? [Y/n]   (uniquement si le repo n'existe pas encore sur GitHub)
+good p --no-commit    # push sans auto-commit
+good -y p             # skip les confirmations
 ```
 
 ---
@@ -62,6 +66,10 @@ Ce que ça fait :
 4. Push le tout
 
 Si des conflits apparaissent pendant le rebase, le script s'arrête et te dit de lancer `good r`.
+
+```bash
+good s --no-commit    # sync sans auto-commit
+```
 
 ---
 
@@ -81,8 +89,8 @@ code venu de GitHub
 Ce que ça fait :
 1. Détecte tous les fichiers en conflit
 2. Envoie chaque fichier à l'IA pour qu'elle fusionne les deux versions intelligemment
-3. Écrase le fichier avec la version résolue
-4. Continue automatiquement le rebase ou merge interrompu
+3. Écrase le fichier avec la version résolue (rejet si marqueurs `<<<<<<<` restants)
+4. Continue automatiquement le rebase ou merge interrompu (`git commit --no-edit` pour les merges)
 
 ---
 
@@ -122,13 +130,19 @@ Si le dépôt n'est pas lié, invite à lancer `good init`.
 
 ---
 
-### `good update` — Mettre à jour good et le contexte Goodview
+### `good unlink` — Supprimer la liaison Goodview
+
+Supprime `.good/config.json` sans relancer OAuth. Utile pour changer de projet ou nettoyer.
+
+---
+
+### `good update` / `good u` — Mettre à jour good et le contexte Goodview
 
 **Quand l'utiliser :** pour récupérer la dernière version du CLI et rafraîchir les métadonnées du projet lié (URLs dev/prod, nom client, etc.).
 
 Ce que ça fait :
 1. Compare la version locale du CLI avec le manifest Goodview (ou GitHub en repli)
-2. Télécharge et installe la dernière version dans `~/.local/bin/good`
+2. Télécharge et installe la dernière version dans `~/.local/bin/good` + `~/.local/share/good/lib/`
 3. Si `.good/config.json` existe : rafraîchit le cache projet depuis l'API Goodview
 4. Option `--deps` : lance `composer install` et/ou `npm install` si les fichiers sont présents
 
@@ -151,14 +165,24 @@ Syntaxe bash (le `#` seul démarre un commentaire, d'où ces formes) :
 
 ```bash
 good ai lance le projet
+good ai start                          # sous-commande explicite (sans classifieur)
+good ai diagnose                       # diagnostic explicite
+good ai edit modifier routes/api.php   # modification de fichiers
 good ai connection refused sur 8000
-good ai demarre le projet ilo est refused
-good ai occupe-toi de modifier .env pour ajouter TERMINAL_SERVICE_SECRET
 good do ajoute une route health dans routes/api.php
 good '#' 'lance le projet'   # syntaxe « # message »
+good -y ai edit corrige typo dans README.md   # skip confirmations
 ```
 
-#### Types d'actions
+#### `good dev` — Cycle de vie du serveur de dev
+
+```bash
+good dev start     # lance le projet (comme good ai start)
+good dev status    # PID, logs récents, health check
+good dev stop      # arrête le process enregistré dans .good/dev.pid
+```
+
+---
 
 | Intent détecté | Mots-clés typiques | Action |
 |---|---|---|
@@ -185,8 +209,10 @@ Exécuter cette commande? [Y/n]
 ```
 
 Commandes exécutables (liste blanche, jamais destructives) :
-`composer dev`, `composer stack:up`, `composer postgres:up`, `npm run dev`,
-`bash docker/scripts/ensure-dev-up.sh`
+`composer dev`, `composer stack:up`, `composer postgres:up`, `npm run dev`, `pnpm run dev`,
+`make dev`, `docker compose up -d`, `bash docker/scripts/ensure-dev-up.sh`
+
+Détection élargie : Laravel, npm, pnpm, Makefile, docker-compose.
 
 #### Modifications de fichiers (intent « edit »)
 
@@ -229,6 +255,56 @@ Affiche en deux blocs :
 
 ---
 
+### `good health` — Santé du projet
+
+Score 0–100 basé sur l'état git, les conflits, le serveur de dev et les outils (Ollama, gh).
+
+```bash
+good health
+# → Score, branche, conflits, dev server, avertissements
+```
+
+---
+
+### `good stats` — Vue développeur
+
+Ton activité `good` sur la période (commits, push, sync, resolve, actions IA).
+
+```bash
+good stats              # 7 derniers jours (défaut)
+good stats --days 30
+good stats --sync       # pousse les events vers Goodview
+```
+
+Journal local : `.good/activity.jsonl` (gitignored).
+
+---
+
+### `good report` — Vue manager
+
+Synthèse équipe pour un lead : activité agrégée par développeur, santé actuelle, sync Goodview.
+
+```bash
+good report --days 7
+good report --sync      # sync + rapport
+```
+
+Remonte vers `POST /v1/admin/good-cli/events` si le projet est lié via `good init`.
+
+---
+
+### `good telemetry` — Gérer le suivi
+
+```bash
+good telemetry status   # activé/désactivé, events en attente
+good telemetry on|off   # opt-in / opt-out (GOOD_TELEMETRY=0 aussi)
+good telemetry sync     # sync manuelle vers Goodview
+```
+
+Données enregistrées : commande, statut, durée, branche, email git — **jamais** le contenu des diffs ou fichiers.
+
+---
+
 ## Résumé visuel
 
 ```
@@ -240,6 +316,11 @@ Envoyer sur GitHub      →  good p
 Récupérer + envoyer     →  good s
 Conflit à résoudre      →  good r
 Tâche IA (action)      →  good ai <instruction>
+Serveur de dev         →  good dev stop|status|start
+Santé du projet        →  good health
+Mon activité           →  good stats
+Rapport équipe         →  good report --sync
+Délier Goodview        →  good unlink
 Voir l'historique       →  good l
 Voir l'état             →  good st
 ```
@@ -249,5 +330,9 @@ Voir l'état             →  good st
 ## Sous le capot
 
 - Modèle IA : **qwen3:8b** via Ollama (local, gratuit, aucun crédit consommé)
+- Architecture modulaire : `good` (entry) + `lib/*.sh` + `lib/py/*.py`
 - Script installé dans : `~/.local/bin/good`
+- Bibliothèque installée dans : `~/.local/share/good/lib/`
 - Aliases git disponibles : `git aic`, `git aip`, `git ais`, `git air`
+- Flag global `-y` / `--yes` pour skip les confirmations
+- Tests : `bats tests/bats/` et `python3 -m unittest discover -s tests/pytest`
