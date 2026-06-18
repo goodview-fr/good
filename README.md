@@ -1,6 +1,6 @@
 # good
 
-CLI **Git + Goodview** : commits IA (Ollama), push/sync GitHub, résolution de conflits, liaison OAuth projet, tâches en langage naturel, suivi d'activité et santé du dépôt.
+CLI **Git + Goodview** : assistant `good dog` (commit/push/sync via git), résolution de conflits IA, liaison OAuth projet, tâches en langage naturel, suivi d'activité et santé du dépôt.
 
 **Version :** `1.2.0` — `good --version`
 
@@ -37,9 +37,7 @@ Relance le terminal ou `source ~/.bashrc`.
 
 | Commande | Description |
 |----------|-------------|
-| `good c` | Commit avec message IA |
-| `good p` / `good s` | Push / sync (fetch + rebase + push) |
-| `good r` | Résolution de conflits IA |
+| `good dog` | Assistant IA — git, code, conflits, shell |
 | `good ai <…>` | Tâche en langage naturel |
 | `good dev` | Serveur de dev (start/stop/status) |
 | `good health` | Santé du projet (score 0–100) |

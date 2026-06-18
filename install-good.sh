@@ -100,23 +100,8 @@ else
     ok "~/.local/bin déjà dans le PATH"
 fi
 
-# ─── 5. Aliases git ───────────────────────────────────────────────────────────
-for alias_name in aic aip ais air; do
-    if git config --global "alias.$alias_name" >/dev/null 2>&1; then
-        existing="$(git config --global "alias.$alias_name")"
-        if [[ "$existing" != *"good"* ]]; then
-            warn "Alias git $alias_name déjà défini ($existing) — non écrasé"
-            continue
-        fi
-    fi
-    case "$alias_name" in
-        aic) git config --global alias.aic '!good commit' ;;
-        aip) git config --global alias.aip '!good push' ;;
-        ais) git config --global alias.ais '!good sync' ;;
-        air) git config --global alias.air '!good resolve' ;;
-    esac
-done
-ok "Aliases git configurés (git aic / aip / ais / air)"
+# ─── 5. Aliases git (optionnel) ───────────────────────────────────────────────
+# good r retiré — conflits via good dog
 
 # ─── 6. Config git minimale ───────────────────────────────────────────────────
 if [ -z "$(git config --global user.name 2>/dev/null)" ]; then
@@ -132,10 +117,7 @@ ok "Config git : $(git config --global user.name) <$(git config --global user.em
 echo ""
 echo "=== Installation terminée ==="
 echo ""
-echo "  good c    → commit avec message IA"
-echo "  good p    → push GitHub"
-echo "  good s    → sync complet"
-echo "  good r    → résoudre conflits"
+echo "  good dog  → assistant IA (commit/push/conflits)"
 echo "  good dev  → stop|status|start serveur de dev"
 echo "  good health → santé du projet"
 echo "  good stats  → activité développeur"

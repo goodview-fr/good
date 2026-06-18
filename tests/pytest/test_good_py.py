@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -18,10 +19,51 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 PY = os.path.join(ROOT, "lib", "py")
 
 
+class TestResolveConflicts(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = load_module("resolve_conflicts", os.path.join(PY, "resolve_conflicts.py"))
+        cls.markers = load_module("conflict_markers", os.path.join(PY, "conflict_markers.py"))
+
+    def test_list_conflict_files_empty_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init", "-q"], cwd=tmp, check=True)
+            self.assertEqual(self.mod.list_conflict_files(tmp), [])
+
+    def test_resolve_no_conflicts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init", "-q"], cwd=tmp, check=True)
+            ok, msg = self.mod.resolve_all(tmp, lambda p: "")
+            self.assertTrue(ok)
+            self.assertIn("Aucun conflit", msg)
+
+
+class TestToolArgs(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tools = load_module("tools", os.path.join(PY, "tools.py"))
+
+    def test_normalize_run_git_list(self):
+        n = self.tools.normalize_tool_args
+        self.assertEqual(n("run_git", ["add", "-A"]), {"args": ["add", "-A"]})
+
+    def test_format_tool_args_list(self):
+        s = self.tools.format_tool_args(["status", "-s"])
+        self.assertIn("status", s)
+
+    def test_normalize_read_file_list(self):
+        n = self.tools.normalize_tool_args
+        self.assertEqual(n("read_file", ["src/main.py"]), {"path": "src/main.py"})
+
+
 class TestClassifyIntent(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.mod = load_module("classify_intent", os.path.join(PY, "classify_intent.py"))
+
+    def test_git_intent(self):
+        self.assertEqual(self.mod.classify("committe et pousse"), "git")
+        self.assertEqual(self.mod.classify("résous les conflits"), "git")
 
     def test_start_intent(self):
         self.assertEqual(self.mod.classify("lance le projet"), "start")

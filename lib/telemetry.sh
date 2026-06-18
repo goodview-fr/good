@@ -97,11 +97,9 @@ PY
 }
 
 _good_map_exit_status() {
-    local cmd="$1" exit_code="$2"
+    local exit_code="$1"
     if [ "$exit_code" -eq 0 ]; then
         echo "ok"
-    elif [ "$exit_code" -eq 2 ] && { [ "$cmd" = "commit" ] || [ "$cmd" = "c" ]; }; then
-        echo "cancel"
     else
         echo "fail"
     fi
@@ -120,7 +118,7 @@ _good_run_command() {
     set -e
     end=$(date +%s 2>/dev/null || echo 0)
     duration_ms=$(( (end - start) * 1000 ))
-    status="$(_good_map_exit_status "$cmd" "$exit_code")"
+    status="$(_good_map_exit_status "$exit_code")"
     meta="${GOOD_EVENT_META:-{}}"
     case "$cmd" in
         health|stats|report|help|-h|--help|--version|-v) ;;

@@ -90,11 +90,107 @@ _ai_check_ollama() {
     fi
 }
 
+# Retourne "deepseek" | "openai" | "ollama"
+_good_ai_provider() {
+    if [ -n "${GOOD_AI_PROVIDER:-}" ]; then
+        echo "$GOOD_AI_PROVIDER"
+        return
+    fi
+    if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+        echo "deepseek"
+    else
+        echo "ollama"
+    fi
+}
+
+# Retourne le modèle par défaut selon le provider
+_good_ai_model() {
+    local provider="${1:-$(_good_ai_provider)}"
+    case "$provider" in
+        deepseek) echo "${DEEPSEEK_MODEL:-deepseek-chat}" ;;
+        openai)   echo "${OPENAI_MODEL:-gpt-4o-mini}" ;;
+        *)        echo "${GOOD_OLLAMA_MODEL:-qwen3:8b}" ;;
+    esac
+}
+
+# Vérifie que le provider est opérationnel
+_ai_check_provider() {
+    local provider
+    provider="$(_good_ai_provider)"
+    case "$provider" in
+        deepseek)
+            if [ -z "${DEEPSEEK_API_KEY:-}" ]; then
+                echo "Erreur: DEEPSEEK_API_KEY non définie." >&2
+                echo "  export DEEPSEEK_API_KEY=sk-..." >&2
+                exit 1
+            fi
+            ;;
+        openai)
+            if [ -z "${OPENAI_API_KEY:-}" ]; then
+                echo "Erreur: OPENAI_API_KEY non définie." >&2
+                exit 1
+            fi
+            ;;
+        ollama)
+            _ai_check_ollama
+            ;;
+    esac
+}
+
 _ai() {
-    echo "$@" | ollama run qwen3:8b --nowordwrap 2>/dev/null \
-        | sed '/^Thinking\.\.\./,/^\.\.\.done thinking\./d' \
-        | sed 's/^`\+//;s/`\+$//;/^```/d' \
-        | sed '/^[[:space:]]*$/d'
+    local provider model
+    provider="$(_good_ai_provider)"
+    model="$(_good_ai_model "$provider")"
+    case "$provider" in
+        deepseek|openai)
+            _ai_openai_oneshot "$provider" "$model" "$@"
+            ;;
+        *)
+            echo "$@" | ollama run "$model" --nowordwrap 2>/dev/null \
+                | sed '/^Thinking\.\.\./,/^\.\.\.done thinking\./d' \
+                | sed 's/^`\+//;s/`\+$//;/^```/d' \
+                | sed '/^[[:space:]]*$/d'
+            ;;
+    esac
+}
+
+_ai_openai_oneshot() {
+    local provider="$1" model="$2"
+    shift 2
+    local prompt="$*"
+    local api_key base_url
+    if [ "$provider" = "deepseek" ]; then
+        api_key="${DEEPSEEK_API_KEY:-}"
+        base_url="${DEEPSEEK_BASE_URL:-https://api.deepseek.com}"
+    else
+        api_key="${OPENAI_API_KEY:-}"
+        base_url="${OPENAI_BASE_URL:-https://api.openai.com}"
+    fi
+    python3 - "$base_url" "$model" "$api_key" "$prompt" <<'PY'
+import json, sys, urllib.request, urllib.error
+base_url, model, api_key, prompt = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+payload = json.dumps({
+    "model": model,
+    "messages": [{"role": "user", "content": prompt}],
+    "stream": False
+}).encode()
+req = urllib.request.Request(
+    f"{base_url}/v1/chat/completions",
+    data=payload,
+    headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+    method="POST"
+)
+try:
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        data = json.loads(resp.read())
+    print(data["choices"][0]["message"]["content"])
+except urllib.error.HTTPError as exc:
+    print(f"Erreur API ({exc.code}): {exc.read().decode(errors='replace')}", file=sys.stderr)
+    sys.exit(1)
+except urllib.error.URLError as exc:
+    print(f"Erreur réseau: {exc.reason}", file=sys.stderr)
+    sys.exit(1)
+PY
 }
 
 _good_branch_counts() {

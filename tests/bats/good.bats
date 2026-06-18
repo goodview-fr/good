@@ -29,7 +29,8 @@ teardown() {
 @test "good help liste les commandes principales" {
     run "$GOOD" help
     [ "$status" -eq 0 ]
-    [[ "$output" == *"commit"* ]]
+    [[ "$output" == *"dog"* ]]
+    [[ "$output" == *"resolve"* ]]
     [[ "$output" == *"dev"* ]]
     [[ "$output" == *"update, u"* ]]
 }
@@ -63,23 +64,6 @@ teardown() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"Télémétrie"* ]]
 }
-
-@test "push annulé si commit refusé" {
-    echo "change" >> file.txt
-    run bash -c "printf 'n\n' | '$GOOD' p"
-    [ "$status" -eq 1 ]
-    [[ "$output" == *"Push annulé"* ]]
-    run "$GOOD" stats --days 1
-    [[ "$output" == *"push"* ]] || [[ "$output" == *"0"* ]]
-}
-
-@test "commit annulé seul exit 0" {
-    echo "change2" >> file.txt
-    run bash -c "printf 'n\n' | '$GOOD' c"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Commit annulé"* ]]
-}
-
 @test "good dev status sans pid" {
     run "$GOOD" dev status
     [ "$status" -eq 0 ]

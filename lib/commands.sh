@@ -3,10 +3,6 @@
 
 # Format: aliases (comma-separated)::handler::help text
 GOOD_COMMAND_REGISTRY=(
-    "c,commit::cmd_commit::Stage tout + génère message AI + commit"
-    "p,push::cmd_push::Commit si besoin + push GitHub (crée le repo si absent)"
-    "s,sync::cmd_sync::Commit + fetch + rebase + push"
-    "r,resolve::cmd_resolve::Résout les conflits git avec l'IA"
     "ai,do::cmd_ai::Instruction NL → lancer, diagnostiquer ou modifier (IA)"
     "dog::cmd_dog::Assistant interactif Ollama (stream, file d'attente)"
     "dev::cmd_dev::Gérer le serveur de dev (stop|status|start)"
@@ -45,7 +41,7 @@ cmd_help() {
   good health|stats|report                 suivi santé et activité
   good telemetry on|off|sync|status      télémétrie et sync Goodview
   good update --force --deps               options de mise à jour
-  good p|s --no-commit                     push/sync sans auto-commit
+  good dog --agent                         commit/push/sync via git (run_git)
   Syntaxe « # message » : good '#' 'lance le projet'
 
 Variables d'environnement :
@@ -59,10 +55,6 @@ _good_dispatch() {
     shift
 
     case "$cmd" in
-        c|commit)   cmd_commit "$@" ;;
-        p|push)     cmd_push "$@" ;;
-        s|sync)     cmd_sync "$@" ;;
-        r|resolve)  cmd_resolve "$@" ;;
         ai|do)      cmd_ai "$@" ;;
         dog)        cmd_dog "$@" ;;
         dev)        cmd_dev "$@" ;;

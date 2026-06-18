@@ -621,7 +621,7 @@ PY
 
     if [ -z "$git_remote" ]; then
         echo ""
-        echo "Aucun remote git configuré. Utilise 'good p' pour créer le repo GitHub et pousser."
+        echo "Aucun remote git configuré. Demande à good dog --agent de configurer origin et pousser (gh repo create…)."
     fi
 }
 

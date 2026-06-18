@@ -460,7 +460,13 @@ _ai_handle_start() {
     start_cmd="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); cmds=d.get("start_commands") or []; print(cmds[0] if cmds else "")' "$info_json")"
 
     if [ -z "$start_cmd" ]; then
-        echo "Aucune commande de démarrage détectée (composer dev ou npm run dev dans composer.json / package.json)."
+        local candidates
+        candidates="$(python3 -c 'import json,sys; print(", ".join(json.loads(sys.argv[1]).get("start_commands") or []))' "$info_json")"
+        echo "Aucune commande de démarrage détectée (composer dev, npm run dev, docker compose, ./good…)."
+        if [ -n "$candidates" ]; then
+            echo "Commandes candidates : $candidates"
+        fi
+        echo "Astuce : good dog --agent pour exécution directe via l'IA."
         exit 1
     fi
 
@@ -529,11 +535,11 @@ PY
             echo "⚠ Git non propre — commits ou modifications en attente :"
             echo "$git_status" | head -20
             echo ""
-            echo "Étape recommandée : good c  (committer avant déploiement)"
+            echo "Étape recommandée : good dog --agent « committe et pousse »"
         else
             echo "✓ Git propre"
             echo ""
-            echo "Étape recommandée : good p  (pousser vers GitHub)"
+            echo "Étape recommandée : good dog --agent « pousse sur GitHub »"
         fi
     else
         echo "Pas de dépôt git — initialise avec 'good init'."
@@ -543,13 +549,12 @@ PY
     _print_sep
     echo "Étapes suggérées :"
     echo "  1. Vérifier que les tests passent localement"
-    echo "  2. good c  — committer les changements"
-    echo "  3. good p  — pousser sur GitHub"
-    echo "  4. Déployer via Clever Cloud / pipeline habituel du projet"
+    echo "  2. good dog --agent  — committer et pousser (via git)"
+    echo "  3. Déployer via Clever Cloud / pipeline habituel du projet"
     if [ -f "$config_file" ]; then
         prod_url="$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); print((c.get("project_cache") or {}).get("prod_url") or "")' "$config_file" 2>/dev/null || true)"
         if [ -n "$prod_url" ]; then
-            echo "  5. Vérifier : $prod_url"
+            echo "  4. Vérifier : $prod_url"
         fi
     fi
     _print_sep
@@ -593,7 +598,7 @@ _ai_handle_diagnose() {
 
 _ai_handle_edit() {
     local instruction="$1"
-    _ai_check_ollama
+    _ai_check_provider
 
     local root context raw_response payload
     root="$(_good_root)"
@@ -602,7 +607,7 @@ _ai_handle_edit() {
     context="$(_ai_gather_context "$instruction")"
     raw_response="$(_ai_request_task "$instruction" "$context" || true)"
     if [ -z "$raw_response" ]; then
-        echo "Erreur: l'IA n'a pas répondu. Vérifie qu'Ollama tourne avec qwen3:8b."
+        echo "Erreur: l'IA n'a pas répondu. Vérifie la configuration du provider ($(_good_ai_provider))."
         exit 1
     fi
 

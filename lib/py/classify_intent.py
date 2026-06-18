@@ -4,6 +4,16 @@ import re
 import sys
 import unicodedata
 
+SHELL_ACTION_PATTERNS = [
+    r"\b(arrete|stop|kill|down|eteint)\b.*\b(docker|container|conteneur|serveur|server|vite|ollama)\b",
+    r"\b(docker)\b.*\b(stop|down|start|up|restart|ps|logs|compose)\b",
+    r"\b(lance|demarre|start|ouvre|boot)\b.*\b(serveur|server|docker|ollama|vite|conteneur|container)\b",
+    r"\b(docker\s+compose)\b",
+    r"\b(composer|npm|pnpm|yarn)\s+(dev|start|serve)\b",
+    r"\b(systemctl|service)\b.*\b(start|stop|restart|status)\b",
+    r"\b(pkill|killall)\b",
+]
+
 
 def normalize(text: str) -> str:
     text = unicodedata.normalize("NFD", text)
@@ -11,8 +21,27 @@ def normalize(text: str) -> str:
     return text.lower()
 
 
+def is_shell_action(instruction: str) -> bool:
+    text = normalize(instruction)
+    return any(re.search(p, text) for p in SHELL_ACTION_PATTERNS)
+
+
 def classify(instruction: str) -> str:
     text = normalize(instruction)
+
+    if is_shell_action(text):
+        return "shell"
+
+    git_patterns = [
+        r"\bcommit\b", r"\bcommitte\b", r"\bcommiter\b", r"\bcommite\b",
+        r"\bpousse\b", r"\bpousser\b", r"\bpush\b",
+        r"\bsync\b", r"\bsynchronis",
+        r"\benvoi.*github\b", r"\benvoyer.*github\b", r"\bsur github\b",
+        r"\bresous\b", r"\bresolve\b", r"\bconflit\b", r"\bconflits\b",
+        r"\brebase\b", r"\bfetch\b",
+    ]
+    if any(re.search(p, text) for p in git_patterns):
+        return "git"
 
     deploy_patterns = [
         r"\bdeploie\b", r"\bdeploy\b", r"\bdeploiement\b", r"\bdeployment\b",
@@ -30,13 +59,14 @@ def classify(instruction: str) -> str:
     diagnose_patterns = [
         r"refus", r"refused", r"connexion", r"connection", r"inaccessible",
         r"ne repond", r"ne marche", r"marche pas", r"erreur", r"error",
-        r"\bport\b", r"\bdown\b", r"arrete", r"502", r"503", r"504",
+        r"\bport\b", r"\bdown\b", r"502", r"503", r"504",
         r"timeout", r"timed out", r"echec", r"échec", r"diagnostic", r"diagnostique",
     ]
     start_patterns = [
         r"\blance\b", r"\blancer\b", r"\bdemarre\b", r"\bdemarrer\b",
         r"\bstart\b", r"\brun\b", r"\bouvre\b", r"\bboot\b", r"\bserve\b",
         r"\blance le projet\b", r"\bdemarre le projet\b",
+        r"\blance le serveur\b", r"\bdemarre le serveur\b",
     ]
 
     deploy_score = sum(1 for p in deploy_patterns if re.search(p, text))
@@ -44,7 +74,7 @@ def classify(instruction: str) -> str:
     diagnose_score = sum(1 for p in diagnose_patterns if re.search(p, text))
     start_score = sum(1 for p in start_patterns if re.search(p, text))
 
-    # Priority: diagnose (connexion) > deploy > start > search > edit
+    # Priority: shell handled above > diagnose (connexion) > deploy > start > search > edit
     if diagnose_score > 0 and re.search(r"refus|refused|connexion|connection", text):
         return "diagnose"
     if deploy_score > 0:
@@ -65,6 +95,9 @@ def classify(instruction: str) -> str:
 def is_file_action(instruction: str) -> bool:
     """True when the user asks to create/modify/delete project files."""
     text = normalize(instruction)
+
+    if is_shell_action(text):
+        return False
 
     # Questions / explanations — not file edits
     if re.search(
