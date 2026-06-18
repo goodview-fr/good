@@ -1,6 +1,6 @@
 # good — Aide-mémoire
 
-**Version actuelle : 1.2.0** — `good --version`
+**Version actuelle : 1.3.1** — `good --version`
 
 `good` est un outil en ligne de commande qui automatise les opérations git courantes
 en utilisant l'IA locale (qwen3:8b via Ollama) pour générer les messages de commit
@@ -164,6 +164,7 @@ diagnostiquer une erreur « connection refused », ou modifier des fichiers via 
 Syntaxe bash (le `#` seul démarre un commentaire, d'où ces formes) :
 
 ```bash
+good ai deploy                         # checklist déploiement explicite
 good ai lance le projet
 good ai start                          # sous-commande explicite (sans classifieur)
 good ai diagnose                       # diagnostic explicite
@@ -188,6 +189,7 @@ good dev stop      # arrête le process enregistré dans .good/dev.pid
 |---|---|---|
 | **Démarrage** | lance, démarre, start, run | Vérifie les ports, propose `composer dev` ou `npm run dev` |
 | **Diagnostic** | refused, connexion, port, erreur | Teste Laravel (8000), Vite (5173), `docker ps`, lit `.env` |
+| **Déploiement** | déploie, deploy, production, clever, mise en prod | Checklist git + `good p` + URL prod (confirmation, pas d'auto-deploy) |
 | **Modification** | modifier, ajoute, corrige, fichier | Propose des edits JSON comme avant (Ollama requis) |
 
 Pour **goodview.fr** :
@@ -335,30 +337,45 @@ Voir l'état             →  good st
 good dog                         # session interactive (stream + file d'attente)
 good dog -p "explique ce dépôt"  # réponse unique streamée (mode print)
 good dog --model qwen3:8b        # surcharger le modèle pour cette session
+good dog --web                   # activer la recherche web (DuckDuckGo)
+GOOD_WEB_SEARCH=1 good dog       # recherche web via variable d'environnement
 good dog --verbose               # afficher la durée de réponse
 echo "…" | good dog -p           # question via stdin
 dog                              # alias (install-good.sh)
 ```
 
 Prérequis : Ollama **0.20+** installé et démarré (`ollama serve`), modèle `qwen3:8b` (`ollama pull qwen3:8b`).
-Le prompt système (contexte projet, branche git, status) est envoyé via l'API `/api/chat` — le flag `ollama run --system` n'existe pas en 0.24.
+Le prompt système (contexte projet, branche git, status, liaison Goodview) est envoyé via l'API `/api/chat`.
 
-**Streaming :** les tokens s'affichent au fil de l'eau (stdout flush) — mode print et interactif.
+**Contexte Goodview :** si `.good/config.json` existe, dog injecte client, projet, URLs dev/prod et dépôt (sans token).
 
-**File d'attente (style Claude CLI) :** pendant qu'une réponse est générée, tapez un message puis Entrée pour le mettre en file (`⏳ N message(s) en file`). Les messages en file sont traités dans l'ordre à la fin de la réponse courante. Prompt : `❯`.
+**Documentation :** la commande `/docs` charge `README.md` + `GOOD.md` pour le prochain message. Les questions du type « explique le projet », « documentation » chargent automatiquement ces fichiers (troncature ~12k caractères).
 
-| Raccourci | Action |
+**Recherche web (opt-in) :** avec `--web` ou `GOOD_WEB_SEARCH=1`, ou si l'intent `search` est détecté (« cherche sur le web… »), dog interroge DuckDuckGo lite et injecte les 3–5 premiers snippets avant la réponse. Aucune dépendance lourde, pas de clé API.
+
+**Déploiement :** « déploie en prod », « clever cloud », etc. déclenchent une checklist (`git status`, `good c`, `good p`, URL prod) — confirmation requise, jamais de déploiement automatique.
+
+**UI moderne :** header avec box-drawing (modèle, projet, branche), markdown rendu en temps réel (code blocks bordés avec label de langage, `**bold**`, `*italic*`, `# titres`, `- listes`, `> blockquotes`), spinner pendant la génération, timing affiché après chaque réponse.
+
+**Streaming :** les tokens s'affichent au fil de l'eau et sont rendus ligne par ligne — mode print et interactif.
+
+**File d'attente (style Claude CLI) :** pendant qu'une réponse est générée, tapez un message puis Entrée pour le mettre en file (`⏳ N message(s) en file`). Prompt : `❯`.
+
+| Raccourci / commande | Action |
 |---|---|
 | Entrée (pendant génération) | Mettre le message en file |
 | Ctrl+C ou Échap | Annuler la génération en cours |
 | Ctrl+D | Quitter la session |
-| `/clear` | Effacer l'historique |
+| `/clear` | Effacer l'historique et vider l'écran |
+| `/docs` | Injecter README.md + GOOD.md pour le prochain message |
+| `/model <nom>` | Changer de modèle Ollama en cours de session |
+| `/context` | Taille de l'historique (messages + caractères) |
+| `/copy` | Copier la dernière réponse dans le presse-papiers |
+| `/help` | Aide des commandes disponibles |
 | `/bye` | Quitter |
 
-Session interactive : `/clear` efface l'historique, `/bye` ou Ctrl+D pour quitter.
-
-Le prompt système inclut le répertoire courant, la branche git et un extrait du `git status`.
-Pour modifier des fichiers automatiquement, utilise plutôt `good ai <instruction>`.
+Le prompt système inclut le répertoire courant, la branche git, un extrait du `git status` et les métadonnées Goodview.
+Les demandes explicites (créer/modifier un fichier, lancer le projet, diagnostiquer, déployer) sont **exécutées** via le pipeline `good ai`, avec confirmation avant action destructive.
 
 ---
 

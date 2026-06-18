@@ -32,6 +32,27 @@ class TestClassifyIntent(unittest.TestCase):
     def test_edit_intent(self):
         self.assertEqual(self.mod.classify("modifier routes/api.php"), "edit")
 
+    def test_deploy_intent(self):
+        self.assertEqual(self.mod.classify("déploie en production"), "deploy")
+        self.assertEqual(self.mod.classify("mise en prod clever cloud"), "deploy")
+
+    def test_search_intent(self):
+        self.assertEqual(self.mod.classify("cherche sur le web la doc Laravel"), "search")
+
+    def test_start_before_edit(self):
+        self.assertEqual(self.mod.classify("lance le projet et modifie routes"), "start")
+
+    def test_diagnose_before_edit(self):
+        self.assertEqual(self.mod.classify("connection refused port 8000"), "diagnose")
+
+    def test_is_file_action_excludes_explain(self):
+        self.assertFalse(self.mod.is_file_action("explique le projet"))
+        self.assertFalse(self.mod.is_file_action("comment fonctionne routes/api.php"))
+
+    def test_is_file_action_detects_edit(self):
+        self.assertTrue(self.mod.is_file_action("modifie routes/api.php"))
+        self.assertTrue(self.mod.is_file_action("ajoute un fichier test.py"))
+
 
 class TestConflictMarkers(unittest.TestCase):
     @classmethod

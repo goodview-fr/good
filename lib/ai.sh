@@ -487,6 +487,84 @@ _ai_handle_start() {
     fi
 }
 
+_ai_handle_deploy() {
+    local instruction="$1" root config_file git_status branch prod_url client_name project_name
+    root="$(_good_root)"
+    config_file="$(_good_config_file)"
+
+    echo "=== Déploiement — checklist (aucune action destructive automatique) ==="
+    echo ""
+
+    if [ -f "$config_file" ]; then
+        python3 - "$config_file" <<'PY'
+import json, sys
+with open(sys.argv[1]) as f:
+    cfg = json.load(f)
+cache = cfg.get("project_cache") or {}
+client = cache.get("client_name") or "—"
+name = cache.get("name") or "—"
+prod = cache.get("prod_url") or ""
+github = cache.get("github_url") or ""
+print(f"Projet Goodview : {name} ({client})")
+if github:
+    print(f"Dépôt           : {github}")
+if prod:
+    env = cache.get("prod_environment_name") or "prod"
+    print(f"URL production  : {prod} ({env})")
+else:
+    print("URL production  : non renseignée — lance 'good update' ou 'good info'")
+PY
+    else
+        echo "Pas de liaison Goodview (.good/config.json absent)."
+        echo "Lance 'good init' pour lier le projet et obtenir l'URL prod."
+    fi
+
+    echo ""
+    if git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
+        branch="$(git -C "$root" branch --show-current 2>/dev/null || echo "?")"
+        git_status="$(git -C "$root" status -s 2>/dev/null || true)"
+        echo "Branche git : $branch"
+        if [ -n "$git_status" ]; then
+            echo ""
+            echo "⚠ Git non propre — commits ou modifications en attente :"
+            echo "$git_status" | head -20
+            echo ""
+            echo "Étape recommandée : good c  (committer avant déploiement)"
+        else
+            echo "✓ Git propre"
+            echo ""
+            echo "Étape recommandée : good p  (pousser vers GitHub)"
+        fi
+    else
+        echo "Pas de dépôt git — initialise avec 'good init'."
+    fi
+
+    echo ""
+    _print_sep
+    echo "Étapes suggérées :"
+    echo "  1. Vérifier que les tests passent localement"
+    echo "  2. good c  — committer les changements"
+    echo "  3. good p  — pousser sur GitHub"
+    echo "  4. Déployer via Clever Cloud / pipeline habituel du projet"
+    if [ -f "$config_file" ]; then
+        prod_url="$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); print((c.get("project_cache") or {}).get("prod_url") or "")' "$config_file" 2>/dev/null || true)"
+        if [ -n "$prod_url" ]; then
+            echo "  5. Vérifier : $prod_url"
+        fi
+    fi
+    _print_sep
+    echo ""
+    echo "good ne lance aucun déploiement automatique."
+    if _ai_confirm "Afficher les commandes Clever Cloud courantes (informatif)?"; then
+        echo ""
+        echo "Clever Cloud (exemples — adapte à ton app) :"
+        echo "  clever login"
+        echo "  clever status"
+        echo "  clever deploy   # depuis la branche configurée sur Clever"
+        echo "  clever logs --follow"
+    fi
+}
+
 _ai_handle_diagnose() {
     local instruction="$1" root info_json start_cmd status_json
     root="$(_good_root)"
@@ -576,7 +654,7 @@ _ai_handle_edit() {
 cmd_ai() {
     local first="${1:-}" intent=""
     case "$first" in
-        start|diagnose|edit|stop|status)
+        start|diagnose|deploy|edit|stop|status)
             _check_git
             intent="$first"
             _good_event_meta "$(python3 -c 'import json,sys; print(json.dumps({"intent":sys.argv[1]}))' "$intent")"
@@ -584,6 +662,7 @@ cmd_ai() {
             case "$first" in
                 start)    _ai_handle_start "$*" ;;
                 diagnose) _ai_handle_diagnose "$*" ;;
+                deploy)   _ai_handle_deploy "$*" ;;
                 edit)
                     if [ -z "${*:-}" ]; then
                         echo "Usage: good ai edit <instruction>"
@@ -625,6 +704,9 @@ cmd_ai() {
             ;;
         diagnose)
             _ai_handle_diagnose "$instruction"
+            ;;
+        deploy)
+            _ai_handle_deploy "$instruction"
             ;;
         *)
             _ai_handle_edit "$instruction"
