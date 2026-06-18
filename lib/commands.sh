@@ -8,6 +8,7 @@ GOOD_COMMAND_REGISTRY=(
     "s,sync::cmd_sync::Commit + fetch + rebase + push"
     "r,resolve::cmd_resolve::Résout les conflits git avec l'IA"
     "ai,do::cmd_ai::Instruction NL → lancer, diagnostiquer ou modifier (IA)"
+    "dog::cmd_dog::Assistant interactif Ollama (stream, file d'attente)"
     "dev::cmd_dev::Gérer le serveur de dev (stop|status|start)"
     "i,init::cmd_init::Initialise git + lie le dépôt à un projet Goodview (OAuth)"
     "info::cmd_info::Affiche la liaison Goodview du dépôt local"
@@ -38,6 +39,7 @@ cmd_help() {
 
   Options globales : -y, --yes (skip confirmations)
 
+  good dog [-p "…"]                        assistant interactif Ollama
   good ai start|diagnose|edit|stop|status  sous-commandes explicites
   good dev stop|status|start               cycle serveur de dev
   good health|stats|report                 suivi santé et activité
@@ -62,6 +64,7 @@ _good_dispatch() {
         s|sync)     cmd_sync "$@" ;;
         r|resolve)  cmd_resolve "$@" ;;
         ai|do)      cmd_ai "$@" ;;
+        dog)        cmd_dog "$@" ;;
         dev)        cmd_dev "$@" ;;
         i|init)     cmd_init "$@" ;;
         info)       cmd_info "$@" ;;

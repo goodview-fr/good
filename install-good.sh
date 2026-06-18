@@ -77,6 +77,13 @@ cp -a "$SCRIPT_DIR/lib" "$HOME/.local/share/good/"
 find "$HOME/.local/share/good/lib" -name '*.py' -exec chmod 644 {} \;
 find "$HOME/.local/share/good/lib" -name '*.sh' -exec chmod 644 {} \;
 ok "good installé dans ~/.local/bin/good (lib dans ~/.local/share/good/lib)"
+cat > "$HOME/.local/bin/dog" <<'EOF'
+#!/usr/bin/env bash
+exec good dog "$@"
+EOF
+chmod +x "$HOME/.local/bin/dog"
+ok "Alias dog installé dans ~/.local/bin/dog"
+
 
 # ─── 4. PATH ──────────────────────────────────────────────────────────────────
 SHELL_RC=""
@@ -136,4 +143,5 @@ echo "  good report → rapport manager (+ --sync Goodview)"
 echo "  good i    → init git + lier à Goodview (OAuth)"
 echo "  good info → afficher la liaison Goodview"
 echo "  good update → mettre à jour le CLI (+ contexte Goodview si lié)"
+echo "  dog         → assistant interactif (Ollama / qwen3:8b)"
 echo ""

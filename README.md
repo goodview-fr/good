@@ -6,6 +6,19 @@ CLI **Git + Goodview** : commits IA (Ollama), push/sync GitHub, résolution de c
 
 ---
 
+**Assistant interactif (`dog`) :**
+
+```bash
+good dog                    # session interactive multi-tours (stream + file d'attente)
+good dog -p "explique ce repo"   # réponse unique streamée (comme claude -p)
+good dog --verbose          # affiche la durée de réponse
+echo "…" | good dog -p      # question via stdin
+dog                         # alias si installé via install-good.sh
+```
+
+Nécessite Ollama 0.20+ avec l'API chat (`/api/chat`). Les réponses sont **streamées** token par token. En session interactive, vous pouvez **mettre des messages en file** pendant qu'une réponse est générée (Entrée), annuler avec Ctrl+C ou Échap.
+
+
 ## Installation
 
 ```bash

@@ -39,6 +39,8 @@ source "$GOOD_LIB/ai.sh"
 # shellcheck source=lib/telemetry.sh
 source "$GOOD_LIB/telemetry.sh"
 # shellcheck source=lib/commands.sh
+source "$GOOD_LIB/dog.sh"
+# shellcheck source=lib/commands.sh
 source "$GOOD_LIB/commands.sh"
 
 _good_parse_global_flags "$@"

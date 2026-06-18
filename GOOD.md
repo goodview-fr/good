@@ -327,6 +327,41 @@ Voir l'état             →  good st
 
 ---
 
+### `good dog` — Assistant interactif (style Claude Code)
+
+**Quand l'utiliser :** pour discuter avec l'IA sur le projet, poser des questions, obtenir de l'aide au code — comme `claude`, mais en local via Ollama.
+
+```bash
+good dog                         # session interactive (stream + file d'attente)
+good dog -p "explique ce dépôt"  # réponse unique streamée (mode print)
+good dog --model qwen3:8b        # surcharger le modèle pour cette session
+good dog --verbose               # afficher la durée de réponse
+echo "…" | good dog -p           # question via stdin
+dog                              # alias (install-good.sh)
+```
+
+Prérequis : Ollama **0.20+** installé et démarré (`ollama serve`), modèle `qwen3:8b` (`ollama pull qwen3:8b`).
+Le prompt système (contexte projet, branche git, status) est envoyé via l'API `/api/chat` — le flag `ollama run --system` n'existe pas en 0.24.
+
+**Streaming :** les tokens s'affichent au fil de l'eau (stdout flush) — mode print et interactif.
+
+**File d'attente (style Claude CLI) :** pendant qu'une réponse est générée, tapez un message puis Entrée pour le mettre en file (`⏳ N message(s) en file`). Les messages en file sont traités dans l'ordre à la fin de la réponse courante. Prompt : `❯`.
+
+| Raccourci | Action |
+|---|---|
+| Entrée (pendant génération) | Mettre le message en file |
+| Ctrl+C ou Échap | Annuler la génération en cours |
+| Ctrl+D | Quitter la session |
+| `/clear` | Effacer l'historique |
+| `/bye` | Quitter |
+
+Session interactive : `/clear` efface l'historique, `/bye` ou Ctrl+D pour quitter.
+
+Le prompt système inclut le répertoire courant, la branche git et un extrait du `git status`.
+Pour modifier des fichiers automatiquement, utilise plutôt `good ai <instruction>`.
+
+---
+
 ## Sous le capot
 
 - Modèle IA : **qwen3:8b** via Ollama (local, gratuit, aucun crédit consommé)
